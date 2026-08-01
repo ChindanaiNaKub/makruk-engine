@@ -20,6 +20,7 @@ Rust Makruk engine. Sole rule authority: markrukthai `shared/engine.ts` + `share
 
 ## Strength gate
 `node scripts/match-arena.mjs --games 8 --skill N --movetime 100` (fairy gets 4×). Current: sweeps skill ≤0, ~even at 5 (counting-rule draws), shut out at 10.
+Fast proxy gate: `node scripts/strength-probe.mjs --movetime 100` (add `MAKURUK_EVAL=net MAKURUK_WEIGHTS=...` for a net) — top-1 vs fairy depth-12 labels on `tests/fixtures/probe-v1.jsonl`, ~65 s. **movetime must be ≥100** (`src/search.rs:177` makes 50 ms depth-1). Rebuild the set with `scripts/probe-build.mjs`. Baselines: classic 34.4%, v1 22.2%, r2 19.7%.
 Datagen (spec §3): `node scripts/datagen.mjs --positions N --out tools/data/<name>.jsonl` — fairy self-play labels through our oracle; ~2,900 pos/s at 12 jobs.
 Training (spec §4): `training/venv/bin/python -m training.train --data tools/data/<corpus>.jsonl --out out/<run>` then `-m training.export --ckpt out/<run>/last.pt --out out/<run>` (torch in `training/venv`).
 

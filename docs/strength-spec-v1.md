@@ -123,7 +123,27 @@ UCI wire protocol unchanged; the weights path is worker config — no `browserEn
 
 ## Execution log
 
-**M4 — 2026-08-01 (in progress): v1 gate FAILED at skill 10, as the spec's loop anticipates.**
+**M4 — 2026-08-01 (in progress): DAgger rounds 1–2 trained; r2 gate FAILED, no movement over v1.**
+Artifacts `out/r1/makruk-tiny-r1-cead7303693e.bin` and `out/r2/makruk-tiny-r2-0530f86f9b4a.bin` (204 KB each) from corpora `tools/data/dagger-r1.jsonl`, `dagger-r2.jsonl`, `dagger-r2t.jsonl`. Gate blocks vs native fairy skill 10 + official NNUE, 16 games: **0–16 at equal 100/100 ms**, and **0–16 with fairy at the default 4× (100/400 ms)** — the handicap was not the variable. All 32 losses were **checkmates; zero counting draws, zero errors**. Discriminator vs our own classic eval (8 games, equal 100/100): **0W–5L–1D + 2 max-plies aborts** — statistically identical to v1's 0W–5L–2D, so two rounds bought nothing measurable and the net remains below the classical baseline it must beat before fairy is a meaningful opponent.
+Also seen: **2 of 8 discriminator games hit the 400-ply abort** in mutual repetition (~150 plies of `e4d4 g1g2 d4e4 g2g1` — both sides alternating, not one side stalling). Aborted games are discarded by design (§3), so whatever those positions teach never enters a corpus.
+
+**M4 tooling — 2026-08-02: strength probe added (`scripts/probe-build.mjs`, `scripts/strength-probe.mjs`).**
+Motivation: the arena is ground truth but carries no gradient — v1, r1 and r2 all score 0–16, which cannot rank them — while every metric the training loop can see (val loss, WDL acc, counting-slice acc, int8 agreement) was green throughout. The probe is a frozen set of 320 corpus positions (`tests/fixtures/probe-v1.jsonl`, deduped, stratified by phase × counting-state, one per source game) each labelled with native fairy's **depth-12** best move; the scorer reports top-1 agreement per stratum plus a self-play position-repetition rate. ~65 s per artifact, so it can gate every round. Labels are reproducible: fairy runs `Threads 1` with hash cleared per position (the first build gave one FEN two different answers). Scoring **must use `--movetime >= 100`**: `src/search.rs:177` will not start an iteration unless `min(movetime,50)` ms remain, so 50 ms is depth-1 play (the probe now refuses it).
+
+**First probe report (movetime 100, 320 positions, 8 self-play games):**
+
+| artifact | top1 | opening | middle | endgame | endgame+counting | repeated plies |
+|---|---|---|---|---|---|---|
+| classic | **34.4%** | 26.3% | 42.5% | 42.5% | 26.3% | 27.1% (2/8 looping) |
+| v1 | 22.2% | 11.3% | 18.8% | 31.3% | 27.5% | 20.0% (2/8 looping) |
+| r2 | 19.7% | 7.5% | 17.5% | 25.0% | 28.8% | 12.7% (0/8 looping) |
+
+Validation: the ordering reproduces the arena (classic ≫ net; v1 ≈ r2, their 2.5 pt gap is ~1 se on n=320), so the proxy is honest enough to rank rounds.
+**What it localises:** the net is at or above classic **only** on the counting-active endgame slice (28.8 vs 26.3) — exactly what it was trained on (46.5% of corpus rows are counting-active, M1) and what M2's 92% counting accuracy already reported. It is 3–4× worse than classic in the **opening** (7.5 vs 26.3) and less than half as good in the **middlegame**, and DAgger made the opening *worse* (11.3 → 7.5). The corpus is endgame-heavy and the labels are depth-0, so the middlegame is both under-represented and shallowly labelled.
+**Correction to the entry above:** the repetition metric does *not* support blaming the net for the aborts — in self-play classic repeats more (27.1%) than r2 (12.7%). The abort signature is mutual, so "flat WDL head causes shuffling" is withdrawn as unsupported.
+**Read:** further DAgger rounds are the wrong lever — they re-teach a depth-0 signal from an endgame-heavy corpus, in games already lost by the middlegame. Candidate amendments, now evidence-ranked: (1) **deeper labels** — replace depth-0 `eval` with depth 6–8 search labels and pay the datagen throughput; (2) **rebalance the corpus** toward opening/middlegame positions; (3) keep aborted games, labelled as draws. Not yet decided — needs a spec amendment before round 3.
+
+**M4 — 2026-08-01 (earlier): v1 gate FAILED at skill 10, as the spec's loop anticipates.**
 First dev block (16 games, equal 100/100 ms, native fairy skill 10): **0–16**. Discriminator vs our own *classic* eval (8 games, 100/100): **0W–5L–2D** → v1 net is below the classical baseline, not an integration break (no oracle errors, coherent games, draws adjudicated correctly). Diagnosis: depth-0 static labels teach good endgame/rule sense (92% counting-slice acc) but under-value mating attack at 200k nps vs fairy's 5× deeper search. This is precisely the condition DAgger rounds exist to fix (spec §5): on-policy outcomes through our oracle + teacher rescues. Round 1: self-play datagen (our net vs NNUE teacher, 15% interventions, student-decision positions only) + 1-epoch continuation w/ 20k replay + preservation → re-gate. Note: `fairy info` suppression forced eval-command labels as in M0; student-side evals come from a new `eval` UCI command added to our binary for Goldilocks weights.
 
 **M3 — 2026-08-01: PASSED with one amended gate (nps).**
