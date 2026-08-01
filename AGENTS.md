@@ -17,6 +17,7 @@ Rust Makruk engine. Sole rule authority: markrukthai `shared/engine.ts` + `share
 - Search: no panics on stop; `bestmove (none)` only on game over; soft deadline never fires before iteration 1 (5× hard cap exists).
 - Search-side repetition: nodes repeating `game.position_history` score 0 — do NOT add game-level repetition adjudication (site has none).
 - Classic worker deploy: target `no-modules`, files sit beside `js/worker.js`.
+- **`.cargo/config.toml` sets `-C target-feature=+simd128` for wasm32** (rustc defaults it OFF). Worth +43.7% net nps (213k → 307k) for +2 KB; search results are bit-identical (same nodes/score/PV at fixed depth). Do not drop it — the M3 "nps cost is intrinsic" note was measured on a scalar build. Browser floor: Chrome 91+, Firefox 89+, Safari 16.4+.
 
 ## Strength gate
 `node scripts/match-arena.mjs --games 8 --skill N --movetime 100` (fairy gets 4×). Current: sweeps skill ≤0, ~even at 5 (counting-rule draws), shut out at 10.

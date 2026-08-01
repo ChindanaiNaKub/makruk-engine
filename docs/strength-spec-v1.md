@@ -123,6 +123,23 @@ UCI wire protocol unchanged; the weights path is worker config — no `browserEn
 
 ## Execution log
 
+**M3 amendment — 2026-08-02: wasm was shipping scalar. SIMD128 recovers +43.7% nps; the 500k target is partially reinstated.**
+
+M3 recorded the net's 200k wasm nps as intrinsic ("micro-optimization showed the cost is intrinsic … the meaningful gate is the arena block, not node speed") and amended the §7 target from 500k to 200k. That measurement was taken on a build with **WASM SIMD128 off**, which is rustc's default — there was no `.cargo/config.toml` and no `-C target-feature=+simd128`. The accumulator is 2–3 × 256-wide f32 ops per node plus a 266→32→32→3 tail, i.e. precisely the shape 4-wide SIMD accelerates.
+
+Measured on an idle machine, startpos, 3 s, 5 reps each (`out/r3` artifact):
+
+| build | net nps | spread |
+|---|---|---|
+| scalar | 213.4k | 212.9k – 213.9k |
+| **simd128** | **306.7k** | 304.5k – 308.0k |
+
+**+43.7% for +2.0 KB of wasm** (128.4 → 130.4 KB), which puts the browser within ~8% of the native binary's 332k. Correctness: at fixed `go depth 6` on three positions (startpos, an opening probe, an endgame probe) the SIMD and scalar builds return **identical node counts, scores and PVs** — LLVM does not reassociate floats without fast-math, so this is a pure speed change. `cargo test --release` and `smoke-wasm.mjs` green; native is unaffected because the flag is scoped to the wasm32 target.
+
+The §7 500k aspiration is still not met, but "intrinsic" was wrong and the remaining gap is no longer obviously structural. Next levers if it matters: hand-written v128 intrinsics for the accumulator (with `tests/nnue_agreement.rs` extended to pin the SIMD path against the scalar reference), `wasm-opt --enable-simd` (not installed here), int16 accumulator.
+
+Credit: the lead came from the katgpt-rs Go-arena writeup, which hit the same trap — their wasm port initially benchmarked *slower* than the JS baseline (8.6 ms vs 6.4 ms) and became 10.7× faster once simd128 was enabled. Our gain is much smaller than theirs because their kernel is conv2d over 105k params while ours is an incremental accumulator with far less to vectorize. Their negative result on batched leaf evaluation (only 1.09×, compute-bound, net fits in L2) is also worth not re-discovering.
+
 **M4 round 3 — 2026-08-02: PASSED. The net beats the classical baseline for the first time, on the probe and head-to-head.**
 
 Retrained on the sign-repaired corpus `tools/data/bootstrap-v2.jsonl`, same 3-arm eval-weight sweep, 6 epochs. Every arm improved enormously — including lam=0.5, which is v1's exact configuration, so most of the gain is the label repair rather than the reweighting:

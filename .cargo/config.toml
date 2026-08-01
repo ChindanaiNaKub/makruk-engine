@@ -1,0 +1,9 @@
+# WASM SIMD128 is OFF by default in rustc, so the browser build shipped scalar
+# f32 loops for the NNUE accumulator (2-3 x 256-wide vector ops per node) and the
+# 266->32->32->3 tail. M3 measured 200k nps against a 500k aspiration and recorded
+# the cost as "intrinsic"; that conclusion was drawn on a scalar build.
+#
+# Scoped to the wasm target so the native binary and `cargo test` are unaffected.
+# Browser support: Chrome 91+, Firefox 89+, Safari 16.4+ — the site's floor.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
