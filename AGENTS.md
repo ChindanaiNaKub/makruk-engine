@@ -21,8 +21,12 @@ Rust Makruk engine. Sole rule authority: markrukthai `shared/engine.ts` + `share
 ## Strength gate
 `node scripts/match-arena.mjs --games 8 --skill N --movetime 100` (fairy gets 4×). Current: sweeps skill ≤0, ~even at 5 (counting-rule draws), shut out at 10.
 Fast proxy gate: `node scripts/strength-probe.mjs --movetime 100` (add `MAKURUK_EVAL=net MAKURUK_WEIGHTS=...` for a net) — top-1 vs fairy depth-12 labels on `tests/fixtures/probe-v1.jsonl`, ~65 s. **movetime must be ≥100** (`src/search.rs:177` makes 50 ms depth-1). Rebuild the set with `scripts/probe-build.mjs`. Baselines: classic 34.4%, v1 22.2%, r2 19.7%.
-Datagen (spec §3): `node scripts/datagen.mjs --positions N --out tools/data/<name>.jsonl` — fairy self-play labels through our oracle; ~2,900 pos/s at 12 jobs.
+`--nodes N` / `--depth N` equalize search effort instead: net eval runs ~332k nps vs classic ~885k, so a movetime probe scores eval quality and eval speed together. **Gate on movetime** (that is how it plays); use `--nodes 20000` to diagnose. At equal nodes: classic 33.4%, v1 21.6%, r2 18.1%.
+Round-3 incumbent (`out/r3fixed/lam0.97/`, trained on the sign-repaired corpus): **36.6%** — beats classic and sits at the 36.9% depth-0 label ceiling. Discriminator vs classic 2W–1L–3D.
+Diagnostics (see the M4 diagnosis entry in the spec): `node scripts/label-ceiling.mjs --depth 1` with `FAIRY_BIN`/`FAIRY_EVAL` — what the corpus's depth-0 labels are worth (36.9%; d6 45.9%, d8 58.1%). `node scripts/eval-spread.mjs` — sibling-move eval spread, i.e. whether the eval can order moves at all.
+Datagen (spec §3): `node scripts/datagen.mjs --positions N --out tools/data/<name>.jsonl` — fairy self-play labels through our oracle; ~2,900 pos/s at 12 jobs. Teacher eval is White-relative (`Final evaluation … (white side)`) and every stored label is side-to-move relative — convert with `toStmCp`, never by comparing `evalSide` to `side` (that bug inverted 47% of the bootstrap corpus; see the M4 label-sign spec entry). Corpora predating 2026-08-02 need `node scripts/fix-eval-sign.mjs <in> <out>`; `dagger-r*.jsonl` must be regenerated instead (their Goldilocks weights are unpatchable).
 Training (spec §4): `training/venv/bin/python -m training.train --data tools/data/<corpus>.jsonl --out out/<run>` then `-m training.export --ckpt out/<run>/last.pt --out out/<run>` (torch in `training/venv`).
+`--eval-weight LAM` sets the loss mix `(1-LAM)*WDL_CE + LAM*eval_MSE`; comma-separated values sweep arms in one process (the 8M-row corpus loads once, ~13 min). `--sched cosine` for long runs. Per-epoch `evalR2` is the diagnostic that matters — v1 shipped at 0.255, which is why it lost.
 
 ## NNUE (v1, M3+)
 

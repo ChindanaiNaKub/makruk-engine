@@ -123,6 +123,93 @@ UCI wire protocol unchanged; the weights path is worker config — no `browserEn
 
 ## Execution log
 
+**M4 round 3 — 2026-08-02: PASSED. The net beats the classical baseline for the first time, on the probe and head-to-head.**
+
+Retrained on the sign-repaired corpus `tools/data/bootstrap-v2.jsonl`, same 3-arm eval-weight sweep, 6 epochs. Every arm improved enormously — including lam=0.5, which is v1's exact configuration, so most of the gain is the label repair rather than the reweighting:
+
+| lam | eval R² (was, corrupted) | WDL acc | counting acc | probe top-1 @ movetime 100 |
+|---|---|---|---|---|
+| 0.5 | **0.773** (0.253) | 0.782 | 0.918 | 29.7% |
+| 0.85 | **0.932** (0.679) | 0.726 | 0.866 | **35.6%** |
+| 0.97 | **0.964** (0.730) | 0.665 | 0.820 | **36.6%** |
+| *classic (reference)* | *0.835* | — | — | *34.4%* |
+| *fairy d1 (label ceiling)* | *1.0* | — | — | *36.9%* |
+
+**Winner: lam=0.97**, `out/r3fixed/lam0.97/makruk-tiny-v1-4452f72612f1.bin`.
+
+- **36.6% against a 36.9% depth-0 label ceiling** — the artifact has extracted essentially everything these labels contain.
+- Counting stratum **43.8%** vs classic 26.3% and fairy-d1 28.8% — the counting side-channels are doing real work now that the eval target is coherent.
+- **Shuffling is gone**: 5.9% repeated plies and 0/8 looping games, against classic's 27.1% and 2/8. The M4 abort signature that earlier entries speculated about traces to eval incoherence, and it cleared up on its own once the labels were right.
+- Discriminator vs our own classic eval, 8 games equal 100/100: **2W–1L–3D** (+2 max-plies aborts), against v1's 0W–5L–2D. This clears the blocker the M4 sequence had been stuck behind.
+
+**The counting-accuracy guardrail was wrong and the gate was right.** lam=0.97 failed the ≥0.85 `cntAcc` guardrail (0.820) while playing counting positions *best* on the probe (43.8%). WDL classification accuracy on counting rows measures whether the net predicts the result, not whether it picks the move; treat it as a descriptive statistic, not a gate. The gate that mattered is the one §M4 already specifies — the artifact out-playing the incumbent.
+
+**Now, and only now, is the deferred lever justified.** At 36.6% against a 36.9% ceiling, further gains cannot come from fitting these labels better — not from more capacity, not from a scalar head, not from more epochs. The next lever is **deeper labels** (ceiling d6 45.9%, d8 58.1%), exactly as priced in the diagnosis entry below. The escalation ladder was climbed in the right order: it just turned out rungs 1–2 were unnecessary and rung 3 was blocked by a bug.
+
+**M4 label-sign — 2026-08-02: CORPUS BUG. Half of every eval label in the bootstrap corpus was sign-inverted. This, not label depth or corpus balance, is why v1/r1/r2 lost.**
+
+Round 3a (below) reweighted the loss toward the teacher-eval term and nearly tripled eval R² (0.253 → 0.730 at lam=0.97) — but probe top-1 moved only 22.2% → 24.4%, about 1 se on n=320. Fitting the target 2.9× better bought ~2 points, which meant the target itself was suspect. It was.
+
+`scripts/datagen.mjs` normalized the teacher eval with `evalSide === side`, where `evalSide` is the string `"white"` captured from fairy's `Final evaluation … (white side)` line and `side` is `"w"`/`"b"`. **`"white" === "w"` is never true**, so the ternary always took the negating branch and every label was stored *black-relative* instead of side-to-move-relative. Black-to-move rows were correct by accident; every white-to-move row had its sign inverted. Measured on the shipped corpus: **4,744,611 of 10,002,463 rows (47.4%)**.
+
+Proof, on 18k eval-labelled rows, correlating our classic eval against the stored labels:
+
+| | R² | Pearson r | MSE |
+|---|---|---|---|
+| as shipped | −0.931 | **0.018** | 0.4497 |
+| after sign repair | **0.835** | **0.916** | 0.0395 |
+
+`r = 0.018` is not a weak signal, it is noise — a classical material eval cannot be uncorrelated with an NNUE eval of the same positions. After repair the two agree at r=0.916.
+
+**This retro-explains every earlier result, and supersedes the mechanism proposed in the diagnosis entry below:**
+- **WDL labels were always fine** (`base === r.side` compares `"w"`/`"b"` correctly), so the net legitimately reached 72.7% WDL accuracy and 92% counting-slice accuracy — it was learning the one channel that was clean.
+- **Eval R² was capped at 0.255** because the features are stm-canonical, so the net cannot tell the two parities apart and cannot learn a sign that flips at random. It could only partially cheat through the `ply/200` side-channel.
+- **Classic eval scores R² 0.835 against the repaired labels — better than the net ever achieved against the corrupted ones (0.730).** That is the entire explanation for classic 34.4% vs net 22.2% on the probe. The "distil the teacher's static eval" objective in §1 was never wrong; the target was inverted.
+- The 73/27 loss-scale imbalance identified in round 3a is real but was a second-order effect on top of this.
+
+**Fixes landed:** `scripts/datagen.mjs` now converts via `toStmCp(cp, evalSide, side)` (normalize to White's view, then to the mover's) on both the teacher path and the DAgger student path — the latter also fed the corrupted value into the Goldilocks weights. `scripts/fix-eval-sign.mjs` repairs corpora in place by negating `eval` on even-ply rows (stored = −white_cp, so even-ply/white-to-move rows negate and odd-ply rows are already correct); `tools/data/bootstrap-v2.jsonl` is the repaired 10M corpus. **`dagger-r1/r2/r2t.jsonl` cannot be patched** — their Goldilocks `w` weights were computed against the corrupted eval and the student eval is not stored, so they must be regenerated.
+
+**Consequences for the plan:** round 3a's lambda sweep was run against corrupted labels and its conclusions do not carry; it is being re-run on `bootstrap-v2`. The escalation ladder (scalar head → L1=512 → deeper labels) is suspended until a net trained on clean labels is measured — every rung of it was motivated by evidence that this bug produced. The `--eval-weight` / `--sched` / `evalR2` tooling from 3a is kept; it is what made the target suspect in the first place.
+
+**Method note:** the four measurements in the entry below refuted three hypotheses (search depth, output compression, label depth) and pointed at the fit to the labels. That was correct as far as it went, but "the net fits the labels badly" and "the labels are wrong" are indistinguishable from R² alone. The measurement that separated them was scoring an *untrained* reference (our classic eval) against the same labels — a baseline that cannot have overfit, cannot be undertrained, and has no capacity story. Worth doing early on any distillation target.
+
+**M4 diagnosis — 2026-08-02: round 3 re-scoped. Corpus rebalance REJECTED, deeper labels DEFERRED, the defect is the fit to the labels we already have.**
+
+The previous entry left three candidate amendments open (deeper labels / corpus rebalance / keep aborted games). Four measurements were run to choose between them; three of them refuted a hypothesis, including two of my own, and the fourth located the defect.
+
+New tooling, all cheap enough to re-run per round:
+- `scripts/strength-probe.mjs` gained `--nodes N` / `--depth N`. A `movetime` probe scores eval quality and eval *speed* together, which matters here because the net runs ~332k nps native against classic's ~885k.
+- `scripts/label-ceiling.mjs` — scores native fairy at a shallow limit against the probe's own depth-12 labels, i.e. measures what the corpus labels are worth.
+- `scripts/eval-spread.mjs` — sibling-move eval spread, to test whether the WDL scalar is too flat to order moves.
+
+**1. The gap is not search depth.** At `movetime 100` the net reaches depth 1–2 where classic reaches depth 4. But re-scored at equal nodes (20k) the ranking is essentially unchanged — classic 33.4%, v1 21.6%, r2 18.1%, against 34.4 / 22.2 / 19.7 at equal time. Doubling nodes buys classic ~1 top-1 point, so eval quality dominates search speed on this metric and the net's slower eval costs it only ~1–2 points.
+
+**2. Correction to the previous entry: "the net is at or above classic on the counting-active endgame slice" was a fixed-time artifact.** At equal nodes classic wins *every* stratum, including 30.0% vs 26.3% on endgame+counting — the slice the net was trained on and scores 92% WDL accuracy on. The net has no stratum where it is competitive.
+
+| stratum (20k nodes) | classic | v1 | r2 | fairy d1 |
+|---|---|---|---|---|
+| **top1** | **33.4%** | 21.6% | 18.1% | **36.9%** |
+| opening/none | 28.8 | 12.5 | 7.5 | 36.3 |
+| middle/none | 38.8 | 18.8 | 18.8 | 38.8 |
+| endgame/none | 36.3 | 28.8 | 26.3 | 43.8 |
+| endgame/counting | 30.0 | 26.3 | 20.0 | 28.8 |
+
+**3. The WDL scalar is not compressed.** Median sibling-move range: classic 147 cp, v1 **257**, r2 **297**; median stddev 28.8 / 63.6 / 71.2. The net is *more* opinionated than classic and still ranks worse — confidently wrong, not flat. A head/scale fix is not indicated by this evidence.
+
+**4. The depth-0 label ceiling is ~37%, and v1 reaches 21.6% of it.** Fairy + official NNUE scored against its own depth-12 labels: **d1 36.9% · d2 36.3% · d4 38.8% · d6 45.9% · d8 58.1%**. So the labels we already recorded are worth *more than our classic eval* (33.4%), and the student captures well under two thirds of them. Deeper labels would raise a ceiling we are 15 points below.
+
+**Root cause — the net is a good result-classifier and a bad eval-regressor.** Decomposing v1's validation loss over 151k held-out rows: WDL CE 0.5114 (acc 72.7%) vs eval MSE 0.1933 against a target variance of 0.2595 — **eval R² = 0.255**. Two compounding causes: (a) the nominal 50/50 loss is really **73/27** toward CE, because CE on a draw-heavy 3-class target and MSE on `tanh(cp/400)` sit on different scales; and (b) `value_logit` is `softmax(logits)[W] − softmax(logits)[L]`, so the regression rides on the same three logits CE is pinning to result-classification. Note also that the WDL half of the objective is near-noise in the opening — the result of a depth-3 self-play game says little about an opening position — which is consistent with the net's steeply sloped stratum profile against fairy-d1's flat one.
+
+**Disposition of the three candidates:**
+- **Corpus rebalance — REJECTED.** The teacher's own profile at depth 1 is flat across strata, so the opening deficit is not inherited from the data distribution; the corpus already holds ~1.9M opening rows (19% opening / 20% middle / 61% endgame by piece count); and the net is worse than classic in the endgame too, where data is most abundant.
+- **Deeper labels — DEFERRED, now priced.** Real headroom (37 → 46 → 58%), but it is not the binding constraint. This is the escalation if the training-side fixes stall.
+- **Keep aborted games as draws — unaffected by this evidence**, orthogonal and cheap; belongs in the next datagen round, not round 3.
+
+**Round 3 plan (training-side, zero datagen):**
+1. **3a** — `train.py` gained `--eval-weight` (lambda in `(1-lam)*CE + lam*MSE`, comma-separated to sweep arms in one process since the corpus load is ~13 min) and `--sched cosine`. Sweep lam ∈ {0.5 control, 0.85, 0.97} at 6 epochs, select on eval R² with counting-slice accuracy ≥85% as guardrail, then extend the winner to ~30 epochs with cosine LR (v1's val loss was still falling at epoch 15).
+2. **Gate** — probe top-1 at `movetime 100` must exceed classic's **34.4%**; that is the condition M4 is actually blocked on. Equal-nodes, R² and counting-slice accuracy are diagnostics, not gates.
+3. **Escalation ladder** — R² rises but top-1 stalls below ~30% → **3b**, a dedicated scalar head (widen `out` from 32→3 to 32→4, W/D/L on rows 0–2, row 3 trained on the eval target and used as the search scalar; +32 params, touches `export.py`, `src/nnue.rs`, `tests/nnue_agreement.rs`). R² barely moves → capacity, retrain at **L1=512**. Both stall → **deeper labels**.
+
 **M4 — 2026-08-01 (in progress): DAgger rounds 1–2 trained; r2 gate FAILED, no movement over v1.**
 Artifacts `out/r1/makruk-tiny-r1-cead7303693e.bin` and `out/r2/makruk-tiny-r2-0530f86f9b4a.bin` (204 KB each) from corpora `tools/data/dagger-r1.jsonl`, `dagger-r2.jsonl`, `dagger-r2t.jsonl`. Gate blocks vs native fairy skill 10 + official NNUE, 16 games: **0–16 at equal 100/100 ms**, and **0–16 with fairy at the default 4× (100/400 ms)** — the handicap was not the variable. All 32 losses were **checkmates; zero counting draws, zero errors**. Discriminator vs our own classic eval (8 games, equal 100/100): **0W–5L–1D + 2 max-plies aborts** — statistically identical to v1's 0W–5L–2D, so two rounds bought nothing measurable and the net remains below the classical baseline it must beat before fairy is a meaningful opponent.
 Also seen: **2 of 8 discriminator games hit the 400-ply abort** in mutual repetition (~150 plies of `e4d4 g1g2 d4e4 g2g1` — both sides alternating, not one side stalling). Aborted games are discarded by design (§3), so whatever those positions teach never enters a corpus.
