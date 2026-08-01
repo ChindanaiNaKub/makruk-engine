@@ -140,7 +140,9 @@ The §7 500k aspiration is still not met, but "intrinsic" was wrong and the rema
 
 Credit: the lead came from the katgpt-rs Go-arena writeup, which hit the same trap — their wasm port initially benchmarked *slower* than the JS baseline (8.6 ms vs 6.4 ms) and became 10.7× faster once simd128 was enabled. Our gain is much smaller than theirs because their kernel is conv2d over 105k params while ours is an incremental accumulator with far less to vectorize. Their negative result on batched leaf evaluation (only 1.09×, compute-bound, net fits in L2) is also worth not re-discovering.
 
-**M4 round 3 — 2026-08-02: PASSED. The net beats the classical baseline for the first time, on the probe and head-to-head.**
+**M4 round 3 — 2026-08-02: net beats the classical baseline for the first time (probe + discriminator), but the M4 arena gate still FAILS 0–16. The remaining deficit is search, not eval.**
+
+*(Correction: an earlier draft of this entry was headed "PASSED" and was written before the arena gate was run. Round 3 passed the probe gate and the discriminator; it did not pass M4.)*
 
 Retrained on the sign-repaired corpus `tools/data/bootstrap-v2.jsonl`, same 3-arm eval-weight sweep, 6 epochs. Every arm improved enormously — including lam=0.5, which is v1's exact configuration, so most of the gain is the label repair rather than the reweighting:
 
@@ -161,7 +163,27 @@ Retrained on the sign-repaired corpus `tools/data/bootstrap-v2.jsonl`, same 3-ar
 
 **The counting-accuracy guardrail was wrong and the gate was right.** lam=0.97 failed the ≥0.85 `cntAcc` guardrail (0.820) while playing counting positions *best* on the probe (43.8%). WDL classification accuracy on counting rows measures whether the net predicts the result, not whether it picks the move; treat it as a descriptive statistic, not a gate. The gate that mattered is the one §M4 already specifies — the artifact out-playing the incumbent.
 
-**Now, and only now, is the deferred lever justified.** At 36.6% against a 36.9% ceiling, further gains cannot come from fitting these labels better — not from more capacity, not from a scalar head, not from more epochs. The next lever is **deeper labels** (ceiling d6 45.9%, d8 58.1%), exactly as priced in the diagnosis entry below. The escalation ladder was climbed in the right order: it just turned out rungs 1–2 were unnecessary and rung 3 was blocked by a bug.
+A 30-epoch cosine continuation (`out/r3`, R² 0.977) reached probe top-1 **37.2%** — 0.6 pt over the 6-epoch artifact, inside 1 se — with *worse* counting (32.5 vs 43.8) and worse shuffling (17.7% vs 5.9% repeated plies). Past ~6 epochs the labels are exhausted; the extra epochs trade behaviour for noise.
+
+**M4 arena gate: FAILED, 0–16, both artifacts, no draws.** 16 games vs native fairy skill 10 + official NNUE, equal 100/100 — the same shutout as v1, r1 and r2. And the failure is not an artifact of gating against the stretch-tier opponent:
+
+| our eval | opponent | 16 games, equal 100/100 |
+|---|---|---|
+| r3 net (30ep) | fairy skill 10 **+ official NNUE** (stretch bar) | 0–16 |
+| r3 net (6ep) | fairy skill 10 **+ official NNUE** | 0–16 |
+| r3 net (30ep) | fairy skill 10, **classical eval** (primary bar) | 0–15–1 |
+| **our classic eval** | fairy skill 10, **classical eval** | **0–15–1** |
+
+Removing the opponent's net changes nothing, and **our net and our classic eval score identically against it**. Round 3's gains are real on the probe and against our own baseline, and they do not register at all against fairy skill 10.
+
+**The dominant deficit is now search, not eval.** `src/search.rs` (415 lines) has a transposition table, killers, history and quiescence — but **no null-move pruning, no late-move reductions, no aspiration windows, no futility pruning**. Timing from startpos, single thread: fairy completes `go depth 12` *and* `go depth 16` in ~0.04 s including process startup, returning a sane `d3d4`; we need 0.07 s for depth 6 and **2.05 s for depth 8**. At `movetime 100` we reach depth 6 (classic) or 4 (net). Nominal depths are not directly comparable across engines with different reduction schemes, but the arena result is unambiguous, and no eval improvement recovers a gap of that size.
+
+**Revised lever ranking for round 4.** The spec's whole program (§1–§6) is eval-focused, and the eval work has now hit the point of diminishing returns:
+1. **Search: null-move pruning, then LMR** — the standard 2–3 ply each, small and well-understood code, directly attacks the measured deficit. Must keep `do_move`/`undo_move` symmetry and the counting-rule adjudication order intact.
+2. **Aspiration windows + futility/delta pruning in quiescence.**
+3. **Deeper labels** (ceiling d6 45.9%, d8 58.1%) — still the right eval lever, but second-order while we are 6+ effective plies short. Downgraded from "the next lever" to "after search".
+
+The escalation ladder from the diagnosis entry is therefore retired: rungs 1–2 (scalar head, L1=512) were never needed, and rung 3 (deeper labels) is deferred behind search work.
 
 **M4 label-sign — 2026-08-02: CORPUS BUG. Half of every eval label in the bootstrap corpus was sign-inverted. This, not label depth or corpus balance, is why v1/r1/r2 lost.**
 
