@@ -1,0 +1,24 @@
+[package]
+name = "makruk-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight Makruk (Thai chess) engine for the browser: Rust core, WASM build, UCI-compatible worker."
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "makruk-engine"
+path = "src/main.rs"
+
+[dependencies]
+wasm-bindgen = "0.2.100"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

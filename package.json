@@ -1,0 +1,18 @@
+{
+  "name": "makruk-engine",
+  "version": "0.1.0",
+  "description": "Lightweight Makruk (Thai chess) engine: Rust core, WASM build, UCI-compatible browser worker.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "cargo build --release",
+    "build:wasm": "cargo build --release --target wasm32-unknown-unknown && node scripts/build-wasm.mjs",
+    "test": "cargo test --release",
+    "test:mirror": "node scripts/mirror-perft.mjs",
+    "test:wasm": "node scripts/smoke-wasm.mjs"
+  },
+  "files": [
+    "pkg/web",
+    "js/worker.js"
+  ]
+}
