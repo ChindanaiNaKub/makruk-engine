@@ -187,6 +187,18 @@ function startStudent() {
 }
 
 // ---------- Goldilocks weight (spec §5; Moka's 0.25+1.75*gauss on disagreement) ----------
+// Fairy's `eval` reports from White's point of view (the "(white side)" tag is a
+// fixed annotation, not a varying one), while every label we store is relative to
+// the side to move. The original inline conversion compared `evalSide === side`,
+// i.e. "white" === "w" — never true — so it negated EVERY label and silently
+// stored black-relative evals throughout. That inverted the sign on exactly the
+// white-to-move half of the corpus; see the M4 label-sign entry in the spec.
+function toStmCp(cp, evalSide, side) {
+  if (cp === null) return null;
+  const white = evalSide === "black" ? -cp : cp;
+  return side === "w" ? white : -white;
+}
+
 function goldilocks(evalStudentCp, evalTeacherCp) {
   const d =
     Math.min(Math.abs(Math.tanh(evalStudentCp / 400) - Math.tanh(evalTeacherCp / 400)), 2) / 2;
@@ -241,10 +253,11 @@ async function playSelfGame(student, fairy, oracle, gameId, studentWhite) {
       }
       if (!mv) return { rows: [], result: "no-move", plies: ply };
       if (teach.evalCp !== null) {
+        const stmCp = toStmCp(teach.evalCp, teach.evalSide, side);
         rows.push({
           fen: st.fen,
-          eval: teach.evalSide === side ? teach.evalCp : -teach.evalCp,
-          w: +goldilocks(sEval, teach.evalSide === side ? teach.evalCp : -teach.evalCp).toFixed(4),
+          eval: stmCp,
+          w: +goldilocks(sEval, stmCp).toFixed(4),
           wdl: null,
           game: gameId,
           ply,
@@ -298,7 +311,7 @@ async function playGame(fairy, oracle, gameId) {
     }
     rows.push({
       fen: st.fen,
-      eval: evalCp === null ? null : evalSide === side ? evalCp : -evalCp,
+      eval: toStmCp(evalCp, evalSide, side),
       wdl: null,
       game: gameId,
       ply,
