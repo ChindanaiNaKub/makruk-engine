@@ -1,6 +1,8 @@
 //! Negamax alpha-beta with iterative deepening, transposition table,
 //! quiescence, MVV-LVA ordering, killers, and history.
 
+use std::collections::HashSet;
+
 use crate::board::*;
 use crate::eval;
 use crate::game::{Game, Outcome};
@@ -52,7 +54,10 @@ pub struct Searcher {
     nodes: u64,
     limit: SearchLimits,
     deadline_ms: Option<f64>,
+    hard_deadline_ms: Option<f64>,
+    iteration_one_complete: bool,
     stopped: bool,
+    history_set: HashSet<u64>,
 }
 
 #[inline]
@@ -80,7 +85,10 @@ impl Searcher {
             nodes: 0,
             limit: SearchLimits::default(),
             deadline_ms: None,
+            hard_deadline_ms: None,
+            iteration_one_complete: false,
             stopped: false,
+            history_set: HashSet::new(),
         }
     }
 
@@ -97,9 +105,20 @@ impl Searcher {
         if self.limit.max_nodes > 0 && self.nodes >= self.limit.max_nodes {
             self.stopped = true;
         }
-        if let Some(dl) = self.deadline_ms {
-            if now_ms() >= dl {
+        // Hard cap: always enforced, so a degenerate position can't hang us.
+        if let Some(hdl) = self.hard_deadline_ms {
+            if now_ms() >= hdl {
                 self.stopped = true;
+                return self.stopped;
+            }
+        }
+        // Soft cap: ignored until iteration 1 completes, so the root always
+        // has a fully scored move even under severe CPU contention.
+        if self.iteration_one_complete {
+            if let Some(dl) = self.deadline_ms {
+                if now_ms() >= dl {
+                    self.stopped = true;
+                }
             }
         }
         self.stopped
@@ -110,11 +129,18 @@ impl Searcher {
         self.stopped = false;
         self.limit = limit;
         self.killers = [[None; 2]; MAX_PLY];
+        self.iteration_one_complete = false;
         self.deadline_ms = if limit.movetime_ms > 0 {
             Some(now_ms() + limit.movetime_ms as f64)
         } else {
             None
         };
+        self.hard_deadline_ms = if limit.movetime_ms > 0 {
+            Some(now_ms() + limit.movetime_ms as f64 * 5.0 + 250.0)
+        } else {
+            None
+        };
+        self.history_set = game.position_history.iter().copied().collect();
         let start = now_ms();
 
         let mut root = game.clone();
@@ -142,6 +168,7 @@ impl Searcher {
             }
             best_score = score;
             completed_depth = depth;
+            self.iteration_one_complete = true;
             if best_score.abs() >= MATE - MAX_PLY as i32 {
                 break; // mate found, no need to search deeper
             }
@@ -151,6 +178,11 @@ impl Searcher {
                     break;
                 }
             }
+        }
+
+        // Defensive: never return an empty hand on an ongoing game.
+        if best_move.is_none() {
+            best_move = root.legal_moves().first().copied();
         }
 
         SearchInfo {
@@ -204,6 +236,13 @@ impl Searcher {
 
         let ply_i = (ply as usize).min(MAX_PLY - 1);
         let key = game.zobrist_key();
+
+        // Repetition: positions already seen in the real game are treated as
+        // draws so the engine stops shuffling when it can make progress.
+        if ply > 0 && self.history_set.contains(&key) {
+            return 0;
+        }
+
         let mut tt_move: Option<Move> = None;
         if let Some(entry) = self.probe(key) {
             tt_move = Some(entry.best);
@@ -295,7 +334,7 @@ impl Searcher {
         let mut moves = game.legal_moves();
         moves.retain(|mv| {
             game.board.at(mv.to).is_some() // captures
-                || is_promotion(&game.board, *mv) // promotion swings are forcing
+                || is_promotion_move(&game.board, *mv) // promotion swings are forcing
         });
         self.order_moves(game, &mut moves, None, ply as usize);
 
@@ -336,7 +375,7 @@ impl Searcher {
                     s -= attacker.kind.counting_value();
                 }
             }
-            if is_promotion(&game.board, *mv) {
+            if is_promotion_move(&game.board, *mv) {
                 s += 50_000;
             }
             if ply < MAX_PLY {
@@ -372,12 +411,5 @@ impl Searcher {
             }
         }
         pv
-    }
-}
-
-fn is_promotion(board: &Board, mv: Move) -> bool {
-    match board.at(mv.from) {
-        Some(p) => p.kind == Kind::P && sq_row(mv.to) == p.color.promotion_row(),
-        None => false,
     }
 }

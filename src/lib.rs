@@ -10,6 +10,7 @@ pub mod counting;
 pub mod eval;
 pub mod game;
 pub mod movegen;
+pub mod nnue;
 pub mod search;
 pub mod uci;
 
@@ -43,6 +44,13 @@ impl WasmEngine {
     /// Current counting state in compact form, or empty string when none.
     pub fn counting(&self) -> String {
         uci::fresh_counting_for(&self.inner.game).unwrap_or_default()
+    }
+
+    /// Feed NNUE weights (export.py `.bin` bytes). The worker fetches the
+    /// manifest + bin, verifies sha256 itself, then calls this once.
+    /// Returns false when the bytes don't match the expected layout.
+    pub fn init_nnue(&mut self, bytes: &[u8]) -> bool {
+        nnue::init_nnue(bytes)
     }
 
     /// Space-separated UCI move list of all legal moves.

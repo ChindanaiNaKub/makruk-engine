@@ -1,0 +1,96 @@
+{
+  "name": "makruk-tiny-v1-cfa18938c811",
+  "version": "v1",
+  "sha256": "cfa18938c811a4cbea18dc89efff40390fd0eca45c9d971fdde71b873aeab9c9",
+  "architecture": {
+    "features": 768,
+    "l1": 256,
+    "channels": 9,
+    "head": "wdl3",
+    "perspective": "stm-canonical-rankflip",
+    "folds": {
+      "promoted_bia": "met"
+    },
+    "quantization": "int8-per-output-channel + f32 scales/biases"
+  },
+  "weightsBytes": 208792,
+  "weightsKB": 203.9,
+  "tensors": [
+    {
+      "name": "ft.weight",
+      "dtype": "int8",
+      "shape": [
+        768,
+        256
+      ],
+      "dataOffset": 0,
+      "scaleOffset": 196608,
+      "scaleCount": 256
+    },
+    {
+      "name": "ft.bias",
+      "dtype": "f32",
+      "shape": [
+        256
+      ],
+      "dataOffset": 197632
+    },
+    {
+      "name": "fc1.weight",
+      "dtype": "int8",
+      "shape": [
+        32,
+        265
+      ],
+      "dataOffset": 198656,
+      "scaleOffset": 207136,
+      "scaleCount": 32
+    },
+    {
+      "name": "fc1.bias",
+      "dtype": "f32",
+      "shape": [
+        32
+      ],
+      "dataOffset": 207264
+    },
+    {
+      "name": "fc2.weight",
+      "dtype": "int8",
+      "shape": [
+        32,
+        32
+      ],
+      "dataOffset": 207392,
+      "scaleOffset": 208416,
+      "scaleCount": 32
+    },
+    {
+      "name": "fc2.bias",
+      "dtype": "f32",
+      "shape": [
+        32
+      ],
+      "dataOffset": 208544
+    },
+    {
+      "name": "out.weight",
+      "dtype": "int8",
+      "shape": [
+        3,
+        32
+      ],
+      "dataOffset": 208672,
+      "scaleOffset": 208768,
+      "scaleCount": 3
+    },
+    {
+      "name": "out.bias",
+      "dtype": "f32",
+      "shape": [
+        3
+      ],
+      "dataOffset": 208780
+    }
+  ]
+}

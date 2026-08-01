@@ -115,11 +115,8 @@ impl UciEngine {
             Err(e) => return vec![format!("info string invalid fen: {e}")],
         }
 
-        // Optional engine extension: human-supplied counting clock.
-        // `position fen <fen> counting kind,color,current,start,limit,active,pending`
-        if self.game.counting.is_none() {
-            // nothing to add
-        }
+        // Track the position history (for search-side repetition handling).
+        self.game.position_history = vec![self.game.zobrist_key()];
 
         if let Some(moves_str) = moves_part {
             for tok in moves_str.split_whitespace() {
@@ -134,6 +131,7 @@ impl UciEngine {
                     return vec![format!("info string illegal move {tok}")];
                 }
                 self.game.do_move(mv);
+                self.game.position_history.push(self.game.zobrist_key());
             }
         }
         vec![]
@@ -178,7 +176,13 @@ impl UciEngine {
         } else {
             info.nodes
         };
-        let pv_str: Vec<String> = info.pv.iter().map(|m| move_to_uci(*m)).collect();
+        // Replay the PV so promotion suffixes render correctly on every move.
+        let mut pv_game = self.game.clone();
+        let mut pv_str: Vec<String> = Vec::new();
+        for mv in &info.pv {
+            pv_str.push(move_to_uci_prom(&pv_game.board, *mv));
+            pv_game.do_move(*mv);
+        }
         let mut out = vec![format!(
             "info depth {} score cp {} nodes {} nps {} time {} pv {}",
             info.depth,
@@ -189,7 +193,10 @@ impl UciEngine {
             pv_str.join(" ")
         )];
         match info.best_move {
-            Some(mv) => out.push(format!("bestmove {}", move_to_uci(mv))),
+            Some(mv) => out.push(format!(
+                "bestmove {}",
+                move_to_uci_prom(&self.game.board, mv)
+            )),
             None => out.push("bestmove (none)".to_string()),
         }
         out

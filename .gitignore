@@ -1,4 +1,13 @@
 /target
 /pkg
 /node_modules
+/tools
 Cargo.lock
+/training/venv
+__pycache__/
+# training outputs: keep only the gated incumbent artifact (tests/nnue_agreement.rs loads it)
+/out/*
+!/out/v1
+/out/v1/*
+!/out/v1/*.bin
+!/out/v1/*.json

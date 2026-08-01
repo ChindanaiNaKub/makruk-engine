@@ -1,0 +1,320 @@
+// Match arena: makruk-engine (native binary) vs fairy-stockfish-nnue.wasm.
+// Games are adjudicated by OUR Game semantics (same as markrukthai's shared/),
+// so counting-rule draws etc. behave exactly as they would on the site.
+//
+// Usage: node scripts/match-arena.mjs --games 8 --skill -20 --movetime 100
+//   --games N      total games (colors alternate)
+//   --skill S      fairy skill level, -20 (weakest) .. 20 (default)
+//   --movetime MS  time per move for mine (fairy gets 4x)
+//   --fairytime MS optional explicit fairy movetime (overrides 4x rule)
+// Env:
+//   FAIRY_DIR  dir containing fairy-stockfish-nnue.wasm (default: sibling markrukthai-1)
+//   FAIRY_BIN  native fairy binary path — replaces the wasm fairy (2.4x faster)
+//   FAIRY_EVAL EvalFile for the native fairy (e.g. tools/fairy/makruk-a8c621e24a8c.nnue)
+
+import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+import { readFile } from "node:fs/promises";
+import readline from "node:readline";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, "..");
+
+const args = process.argv.slice(2);
+const arg = (name, dflt) => {
+  const i = args.indexOf("--" + name);
+  return i >= 0 ? args[i + 1] : dflt;
+};
+const GAMES = Number(arg("games", "8"));
+const FAIRY_SKILL = Number(arg("skill", "-20"));
+const MOVETIME = Number(arg("movetime", "100"));
+const FAIRYTIME = arg("fairytime", null) ? Number(arg("fairytime")) : MOVETIME * 4;
+const DEPTH = Number(arg("depth", "0")); // >0: `go depth N` for BOTH engines (eval A/B)
+const goCmd = (ms) => (DEPTH > 0 ? `go depth ${DEPTH}` : `go movetime ${ms}`);
+const MAX_PLIES = 400;
+
+const FAIRY_DIR =
+  process.env.FAIRY_DIR || path.resolve(root, "..", "markrukthai-1", "node_modules");
+const FAIRY_BIN = process.env.FAIRY_BIN || null;
+const FAIRY_EVAL = process.env.FAIRY_EVAL || null;
+const START = "rnsmksnr/8/pppppppp/8/8/PPPPPPPP/8/RNSKMSNR w";
+
+// ---- fetch bridge for emscripten under Node 24 ----
+const origFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  const url = String(input?.url ?? input);
+  if (!/^https?:|^file:|^data:|^blob:/.test(url)) {
+    const buf = await readFile(url);
+    return new Response(buf, { status: 200 });
+  }
+  return origFetch(input, init);
+};
+
+// ---------- generic UCI child process (our native binary) ----------
+function startProcessEngine(bin, setup = [], env = null) {
+  const proc = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"], env: env || process.env });
+  const rl = readline.createInterface({ input: proc.stdout });
+  const waiters = [];
+  rl.on("line", (line) => {
+    for (let i = waiters.length - 1; i >= 0; i--) {
+      if (waiters[i](line)) waiters.splice(i, 1);
+    }
+  });
+  const waitFor = (pred, label, timeoutMs = 30000) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timeout " + label)), timeoutMs);
+      waiters.push((line) => {
+        if (pred(line)) {
+          clearTimeout(timer);
+          resolve(line);
+          return true;
+        }
+        return false;
+      });
+    });
+  const send = (l) => proc.stdin.write(l + "\n");
+  return {
+    send,
+    waitFor,
+    bestMove: async (uciMoves, movetimeMs) => {
+      const positionCmd =
+        uciMoves.length === 0
+          ? `position fen ${START}`
+          : `position fen ${START} moves ${uciMoves.join(" ")}`;
+      send(positionCmd);
+      send(goCmd(movetimeMs));
+      const line = await waitFor((l) => l.startsWith("bestmove "), "bestmove", 60000);
+      const mv = line.split(/\s+/)[1];
+      return mv === "(none)" ? null : mv;
+    },
+    kill: () => proc.kill("SIGKILL"),
+  };
+}
+
+// ---------- fairy wasm engine ----------
+async function startFairyEngine() {
+  const require = createRequire(FAIRY_DIR + path.sep);
+  const Stockfish = require("fairy-stockfish-nnue.wasm/stockfish.js");
+  const sf = await Stockfish();
+  const waiters = [];
+  sf.addMessageListener((line) => {
+    for (let i = waiters.length - 1; i >= 0; i--) {
+      if (waiters[i](line)) waiters.splice(i, 1);
+    }
+  });
+  const waitFor = (pred, label, timeoutMs = 120000) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("fairy timeout " + label)), timeoutMs);
+      waiters.push((line) => {
+        if (pred(line)) {
+          clearTimeout(timer);
+          resolve(line);
+          return true;
+        }
+        return false;
+      });
+    });
+  const send = (l) => sf.postMessage(l);
+
+  send("uci");
+  await waitFor((l) => l.includes("uciok"), "uciok");
+  send("setoption name UCI_Variant value makruk");
+  send(`setoption name Skill Level value ${FAIRY_SKILL}`);
+  send("isready");
+  await waitFor((l) => l.includes("readyok"), "readyok");
+
+  return {
+    send,
+    bestMove: async (uciMoves, movetimeMs) => {
+      const positionCmd =
+        uciMoves.length === 0
+          ? `position fen ${toFairyFen(START)} - - 0 1`
+          : `position fen ${toFairyFen(START)} - - 0 1 moves ${uciMoves.join(" ")}`;
+      send(positionCmd);
+      send(goCmd(movetimeMs));
+      const line = await waitFor((l) => l.startsWith("bestmove "), "fairy bestmove");
+      const mv = line.split(/\s+/)[1];
+      return mv === "(none)" ? null : mv;
+    },
+    kill: () => sf.terminate(),
+  };
+}
+
+const toFairyFen = (fen) => fen.replaceAll("F", "M").replaceAll("f", "m");
+
+// ---------- native fairy binary (FAIRY_BIN; ~2.4x faster than wasm) ----------
+async function startFairyProcessEngine(bin) {
+  // Sanitize MAKURUK_* out of the fairy side's env: lets FAIRY_BIN point at our
+  // own binary for net-vs-classic sanity matches (fairy side stays classic).
+  const env = { ...process.env };
+  delete env.MAKURUK_EVAL;
+  delete env.MAKURUK_WEIGHTS;
+  const eng = startProcessEngine(bin, [], env);
+  eng.send("uci");
+  await eng.waitFor((l) => l.includes("uciok"), "fairy uciok");
+  eng.send("setoption name UCI_Variant value makruk");
+  eng.send(`setoption name Skill Level value ${FAIRY_SKILL}`);
+  if (FAIRY_EVAL) eng.send(`setoption name EvalFile value ${FAIRY_EVAL}`);
+  eng.send("isready");
+  await eng.waitFor((l) => l.includes("readyok"), "fairy readyok");
+
+  return {
+    send: eng.send,
+    bestMove: async (uciMoves, movetimeMs) => {
+      const positionCmd =
+        uciMoves.length === 0
+          ? `position fen ${toFairyFen(START)} - - 0 1`
+          : `position fen ${toFairyFen(START)} - - 0 1 moves ${uciMoves.join(" ")}`;
+      eng.send(positionCmd);
+      eng.send(goCmd(movetimeMs));
+      const line = await eng.waitFor((l) => l.startsWith("bestmove "), "fairy bestmove", 120000);
+      const mv = line.split(/\s+/)[1];
+      return mv === "(none)" ? null : mv;
+    },
+    kill: eng.kill,
+  };
+}
+
+// ---------- adjudicator: our engine binary as the rules oracle ----------
+function startOracle() {
+  const proc = spawn(path.join(root, "target", "release", "makruk-engine"), [], {
+    stdio: ["pipe", "pipe", "inherit"],
+  });
+  const rl = readline.createInterface({ input: proc.stdout });
+  const waiters = [];
+  rl.on("line", (line) => {
+    for (let i = waiters.length - 1; i >= 0; i--) {
+      if (waiters[i](line)) waiters.splice(i, 1);
+    }
+  });
+  return {
+    status: async (uciMoves) => {
+      const positionCmd =
+        uciMoves.length === 0
+          ? `position fen ${START}`
+          : `position fen ${START} moves ${uciMoves.join(" ")}`;
+      const promise = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("oracle timeout")), 15000);
+        const lines = [];
+        waiters.push((line) => {
+          lines.push(line);
+          if (line.includes(" | ")) {
+            clearTimeout(timer);
+            resolve(lines);
+            return true;
+          }
+          return false;
+        });
+      });
+      proc.stdin.write(positionCmd + "\n");
+      proc.stdin.write("d\n");
+      const lines = await promise;
+      const illegal = lines.find((l) => l.includes("illegal move"));
+      if (illegal) return { illegal };
+      const dline = lines.find((l) => l.includes(" | "));
+      const [fen, outcome, counting] = dline.split(" | ");
+      return { fen, outcome, counting: counting?.replace("counting=", "") };
+    },
+    kill: () => proc.kill("SIGKILL"),
+  };
+}
+
+async function playGame(mine, fairy, mineColor, gameIdx) {
+  const oracle = startOracle();
+  const moves = [];
+  let plies = 0;
+
+  while (plies < MAX_PLIES) {
+    const mineTurn = (plies % 2 === 0) === (mineColor === "white");
+    const engine = mineTurn ? mine : fairy;
+    const budget = mineTurn ? MOVETIME : FAIRYTIME;
+
+    // Rules check first: is the game already over?
+    const st = await oracle.status(moves);
+    if (st.illegal) {
+      oracle.kill();
+      return { result: "oracle-illegal " + st.illegal, plies, moves };
+    }
+    if (!st.outcome.startsWith("ongoing")) {
+      oracle.kill();
+      return { result: st.outcome, plies, moves };
+    }
+
+    const mv = await engine.bestMove(moves, budget);
+    if (!mv) {
+      oracle.kill();
+      return { result: "no-move " + (mineTurn ? "mine" : "fairy"), plies, moves };
+    }
+
+    // Reject illegal moves immediately (would corrupt the arena otherwise).
+    const after = await oracle.status([...moves, mv]).catch(() => ({ illegal: "oracle-error" }));
+    if (after.illegal) {
+      oracle.kill();
+      return {
+        result: `illegal-move ${mv} by ${mineTurn ? "mine" : "fairy"} (${after.illegal})`,
+        plies,
+        moves,
+      };
+    }
+    moves.push(mv);
+    plies += 1;
+  }
+
+  const st = await oracle.status(moves);
+  oracle.kill();
+  return { result: "max-plies " + st.outcome, plies, moves };
+}
+
+async function main() {
+  const mine = startProcessEngine(path.join(root, "target", "release", "makruk-engine"));
+  const fairy = FAIRY_BIN ? await startFairyProcessEngine(FAIRY_BIN) : await startFairyEngine();
+
+  const score = { mineWins: 0, fairyWins: 0, draws: 0, errors: 0 };
+  const results = [];
+
+  for (let g = 0; g < GAMES; g++) {
+    const mineColor = g % 2 === 0 ? "white" : "black";
+    const t0 = Date.now();
+    const { result, plies, moves } = await playGame(mine, fairy, mineColor, g);
+    const secs = ((Date.now() - t0) / 1000).toFixed(0);
+
+    let tag;
+    if (result.startsWith("checkmate winner=white")) {
+      tag = mineColor === "white" ? "MINE" : "FAIRY";
+    } else if (result.startsWith("checkmate winner=black")) {
+      tag = mineColor === "black" ? "MINE" : "FAIRY";
+    } else if (result.startsWith("stalemate") || result.startsWith("draw")) {
+      tag = "DRAW";
+    } else {
+      tag = "ERR";
+    }
+
+    if (tag === "MINE") score.mineWins++;
+    else if (tag === "FAIRY") score.fairyWins++;
+    else if (tag === "DRAW") score.draws++;
+    else score.errors++;
+
+    const tail = moves.slice(-6).join(" ");
+    console.log(
+      `game ${g}: mine=${mineColor} -> ${tag} (${result}, ${plies} plies, ${secs}s) …${tail}`
+    );
+    if (tag === "ERR") {
+      console.log(`  moves: ${moves.join(" ")}`);
+    }
+    results.push({ tag, result, plies });
+  }
+
+  console.log(
+    `\nscore: mine ${score.mineWins} – fairy ${score.fairyWins} – draws ${score.draws} – errors ${score.errors}`
+  );
+  mine.kill();
+  fairy.kill();
+  process.exit(0);
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

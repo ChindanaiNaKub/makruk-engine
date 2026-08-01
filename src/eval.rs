@@ -167,6 +167,13 @@ pub fn evaluate(game: &Game, ply: u32) -> i32 {
             }
         }
         Outcome::Stalemate | Outcome::CountingDraw | Outcome::InsufficientMaterial => 0,
-        Outcome::Ongoing => evaluate_board(&game.board, game.turn) + counting_term(game, game.turn),
+        Outcome::Ongoing => {
+            // Learned eval when armed (MAKURUK_EVAL=net / WasmEngine::init_nnue);
+            // classical eval remains the default and the "Casual" rung fallback.
+            if let Some(cp) = crate::nnue::net_score(game) {
+                return cp;
+            }
+            evaluate_board(&game.board, game.turn) + counting_term(game, game.turn)
+        }
     }
 }

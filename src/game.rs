@@ -26,6 +26,10 @@ pub struct Game {
     pub turn: Color,
     pub counting: Option<CountingState>,
     pub outcome: Outcome,
+    /// Zobrist keys of positions reached during a real game (oldest first).
+    /// Adjudication does not use this (markrukthai has no repetition rule);
+    /// the search reads it to avoid aimless shuffling loops.
+    pub position_history: Vec<u64>,
     /// When true, a freshly detected Sak Kradan begins counting immediately.
     /// Search default: true (weaker side always counts in rational play).
     pub board_honor_auto_start: bool,
@@ -56,6 +60,7 @@ impl Game {
             turn,
             counting: None,
             outcome: Outcome::Ongoing,
+            position_history: Vec::new(),
             board_honor_auto_start,
         };
         game.counting = counting::fresh_counting_state(&game.board, board_honor_auto_start);
@@ -372,7 +377,7 @@ pub fn perft_divide(game: &mut Game, depth: u32) -> Vec<(String, u64)> {
         let undo = game.do_move(mv);
         let n = perft(game, depth - 1);
         game.undo_move(undo);
-        rows.push((move_to_uci(mv), n));
+        rows.push((crate::board::move_to_uci_prom(&game.board, mv), n));
     }
     rows
 }

@@ -257,6 +257,24 @@ pub fn move_to_uci(mv: Move) -> String {
     format!("{}{}", square_to_uci(mv.from), square_to_uci(mv.to))
 }
 
+/// True when this move promotes a bia (lands a bia on the promotion row).
+pub fn is_promotion_move(board: &Board, mv: Move) -> bool {
+    match board.at(mv.from) {
+        Some(p) => p.kind == Kind::P && sq_row(mv.to) == p.color.promotion_row(),
+        None => false,
+    }
+}
+
+/// UCI with explicit promotion suffix (`e5e6m`): fairy-stockfish requires it,
+/// plain endpoints alone are rejected.
+pub fn move_to_uci_prom(board: &Board, mv: Move) -> String {
+    if is_promotion_move(board, mv) {
+        format!("{}m", move_to_uci(mv))
+    } else {
+        move_to_uci(mv)
+    }
+}
+
 pub fn uci_to_move(uci: &str) -> Option<Move> {
     let b = uci.trim().as_bytes();
     if b.len() < 4 {

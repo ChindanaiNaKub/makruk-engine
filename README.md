@@ -50,6 +50,8 @@ const ENGINE_WORKER_URL = '/engines/makruk/worker.js';
 The protocol is already compatible: `uci` → `uciok`, `isready` → `readyok`,
 `position fen <board> <turn>`, `go movetime <ms>` → `info …` + `bestmove <uci>`.
 FEN accepts the client's serialization (bia = `P/p`, met = `M/m`, promoted bia = `F/f`).
+`bestmove` carries a promotion suffix on promoting moves (`b5b6m`) — fairy-compatible
+and tolerated by the client's move parser.
 
 ## Rules engine semantics (the counting rule)
 
@@ -66,11 +68,29 @@ Search assumption (documented, game-level flag): a fresh Sak Kradan begins **act
 the rational-play default. Game-level code can disable it and use
 `start_counting()` / `stop_counting()` like the UI does.
 
+## Measured strength (scripts/match-arena.mjs, mine = 100 ms/move, fairy = 400 ms/move)
+
+| fairy-stockfish skill level | Mine result |
+|---|---|
+| -20 | 8–0 |
+| -10 | 8–0 |
+| 0 | 8–0 (all converted to mate) |
+| 5 | 0W / 2L / **4 counting-rule draws** (survives worse endgames via Sak Mak/Sak Kradan) |
+| 10 | 0–8 |
+
+So: a solid casual-to-intermediate bot. Notably, against stronger opponents it
+frequently saves lost endgames *through the counting rule* — authentic Makruk
+defensive play.
+
 ## Limits
 
-- No opening book, no NNUE (yet — see the Moka-style distillation idea in the roadmap).
-- Weaker than fairy-stockfish; intended for bots, puzzles, and offline play, not master-level analysis.
-- No repetition adjudication (matches markrukthai's game rules).
+- No opening book, no NNUE (yet — the Moka-style distillation remains the v2 idea).
+- Weaker than fairy-stockfish at full strength; intended for bots, puzzles, and offline play.
+- Repetition: game rules have no repetition adjudication (matches markrukthai);
+  search treats positions repeated from the real game history as draws so the
+  bot does not shuffle forever.
+- Time control: movetime is enforced as a soft deadline (iteration 1 always
+  completes) with a 5× hard cap.
 
 ## License
 
