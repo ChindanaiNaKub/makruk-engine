@@ -41,13 +41,26 @@ const MOVETIME = Number(arg("movetime", "100"));
 const SHUFFLE_GAMES = Number(arg("shuffle", "8"));
 const SHUFFLE_PLIES = Number(arg("shuffle-plies", "60"));
 
+// Search limit. movetime is the default because it is what match-arena gates at,
+// but at equal time the net searches far shallower than classic (measured: depth
+// 1-2 vs depth 4 at 100 ms, since net eval runs ~330k nps vs classic ~885k), so a
+// movetime probe scores eval quality and eval SPEED together. --nodes / --depth
+// equalize search effort and isolate eval quality alone.
+const NODES = arg("nodes", null) === null ? null : Number(arg("nodes"));
+const DEPTH = arg("depth", null) === null ? null : Number(arg("depth"));
+if (NODES !== null && DEPTH !== null) {
+  console.error("--nodes and --depth are mutually exclusive");
+  process.exit(1);
+}
 // src/search.rs:177 refuses to start an iteration unless min(movetime, 50) ms
 // remain, so movetime <= ~60 yields exactly one iteration — depth-1 play, which
 // measures nothing about the eval. 100 ms is also what match-arena gates at.
-if (MOVETIME < 100) {
+if (NODES === null && DEPTH === null && MOVETIME < 100) {
   console.error(`--movetime ${MOVETIME} is below the depth-1 cliff (see src/search.rs:177); use >= 100`);
   process.exit(1);
 }
+const GO = NODES !== null ? `go nodes ${NODES}` : DEPTH !== null ? `go depth ${DEPTH}` : `go movetime ${MOVETIME}`;
+const LIMIT_LABEL = NODES !== null ? `nodes ${NODES}` : DEPTH !== null ? `depth ${DEPTH}` : `movetime ${MOVETIME}ms`;
 const JSON_OUT = args.includes("--json");
 const BIN = path.join(root, "target", "release", "makruk-engine");
 
@@ -87,7 +100,7 @@ function startEngine(env = process.env) {
     collectUntil,
     bestMove: async (fen, moves = []) => {
       send(moves.length ? `position fen ${fen} moves ${moves.join(" ")}` : `position fen ${fen}`);
-      send(`go movetime ${MOVETIME}`);
+      send(GO);
       const line = await waitFor((l) => l.startsWith("bestmove "), "bestmove");
       const mv = line.split(/\s+/)[1];
       return mv === "(none)" ? null : mv;
@@ -198,7 +211,7 @@ async function main() {
 
   const report = {
     artifact: label,
-    movetime: MOVETIME,
+    limit: LIMIT_LABEL,
     top1: Number(pct(top.hit, top.n).toFixed(1)),
     positions: top.n,
     strata: Object.fromEntries(
@@ -218,7 +231,7 @@ async function main() {
   if (JSON_OUT) {
     console.log(JSON.stringify(report));
   } else {
-    console.log(`artifact: ${report.artifact}  (movetime ${MOVETIME}ms, ${secs}s)`);
+    console.log(`artifact: ${report.artifact}  (${LIMIT_LABEL}, ${secs}s)`);
     console.log(`top1: ${report.top1}%  (${top.hit}/${top.n} vs fairy depth ${rows[0].depth})`);
     for (const [k, v] of Object.entries(report.strata)) console.log(`  ${k.padEnd(18)} ${v}%`);
     if (shuf) {
