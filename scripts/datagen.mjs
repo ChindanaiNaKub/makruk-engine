@@ -43,6 +43,18 @@ const OPENING_LEVEL = Number(arg("opening-level", "3"));
 const OUT = arg("out", path.join(root, "tools", "data", `datagen-${Date.now()}.jsonl`));
 const MAX_PLIES = 400;
 
+// `static` = fairy's `eval` command, a depth-0 evaluation (what the bootstrap
+// corpus used). `search` = the score of the `go depth DEPTH` search that already
+// runs to pick the teacher's move, i.e. depth-DEPTH labels for no extra work.
+// The label-ceiling numbers say this is where the headroom is: depth-0 labels
+// cap the probe at 36.9%, depth-6 at 45.9%, depth-8 at 58.1%.
+const LABEL = arg("label", "static");
+if (LABEL !== "static" && LABEL !== "search") {
+  throw new Error(`--label must be 'static' or 'search', got '${LABEL}'`);
+}
+// tanh(cp/400) in training saturates well before this, so mates just peg at ±1.
+const MATE_CP = 30000;
+
 const SELFPLAY = args.includes("--selfplay");
 const STUDENT_TIME = Number(arg("student-time", "50"));
 const INTERVENE_P = 0.15;
@@ -106,7 +118,22 @@ async function startFairy() {
         : `position fen ${toFairyFen(START)} - - 0 1 moves ${moves.join(" ")}`;
     eng.send(positionCmd);
     eng.send(`go depth ${depth}`);
-    const bm = await eng.waitFor((l) => l.startsWith("bestmove "), "bestmove");
+    // Scrape the search score off the info stream on the way past. UCI `score
+    // cp` is ALREADY side-to-move relative — unlike the `eval` command's
+    // White-relative number below, it must never go through toStmCp. Getting
+    // that backwards is exactly the bug the M4 label-sign entry describes.
+    let searchCp = null;
+    const bm = await eng.waitFor((l) => {
+      // Skill Level < 20 makes fairy search MultiPV and emit one scored line
+      // per root move; only multipv 1 is the position's score.
+      if (l.startsWith("info ") && l.includes(" score ") && !/ multipv (?!1\b)\d+/.test(l)) {
+        const cp = l.match(/ score cp (-?\d+)/);
+        const mate = l.match(/ score mate (-?\d+)/);
+        if (cp) searchCp = Number(cp[1]);
+        else if (mate) searchCp = Number(mate[1]) > 0 ? MATE_CP : -MATE_CP;
+      }
+      return l.startsWith("bestmove ");
+    }, "bestmove");
     const mv = bm.split(/\s+/)[1];
     eng.send("eval");
     const evalLine = await eng.waitFor((l) => l.startsWith("Final evaluation"), "eval");
@@ -114,7 +141,12 @@ async function startFairy() {
     const m = evalLine.match(/Final evaluation\s+([-+]?[\d.]+)\s+\((white|black) side\)/);
     const val = m ? parseFloat(m[1]) : null; // null = undefined eval (in check)
     const side = m ? m[2] : "white";
-    return { mv: mv === "(none)" ? null : mv, evalCp: val === null ? null : Math.round(val * 100), evalSide: side };
+    return {
+      mv: mv === "(none)" ? null : mv,
+      evalCp: val === null ? null : Math.round(val * 100),
+      evalSide: side,
+      searchCp,
+    };
   };
 
   return { setSkill, moveAndEval, kill: eng.kill };
@@ -199,6 +231,14 @@ function toStmCp(cp, evalSide, side) {
   return side === "w" ? white : -white;
 }
 
+/// The one place the label mode is resolved. `searchCp` is already stm-relative
+/// (UCI); only the static `eval` reading needs converting.
+function labelOf(teach, side) {
+  return LABEL === "search"
+    ? teach.searchCp
+    : toStmCp(teach.evalCp, teach.evalSide, side);
+}
+
 function goldilocks(evalStudentCp, evalTeacherCp) {
   const d =
     Math.min(Math.abs(Math.tanh(evalStudentCp / 400) - Math.tanh(evalTeacherCp / 400)), 2) / 2;
@@ -252,8 +292,8 @@ async function playSelfGame(student, fairy, oracle, gameId, studentWhite) {
         mv = await student.move(moves, STUDENT_TIME);
       }
       if (!mv) return { rows: [], result: "no-move", plies: ply };
-      if (teach.evalCp !== null) {
-        const stmCp = toStmCp(teach.evalCp, teach.evalSide, side);
+      const stmCp = labelOf(teach, side);
+      if (stmCp !== null) {
         rows.push({
           fen: st.fen,
           eval: stmCp,
@@ -304,14 +344,15 @@ async function playGame(fairy, oracle, gameId) {
     const side = ply % 2 === 0 ? "w" : "b";
     const level = ply < OPENING_PLIES ? OPENING_LEVEL : 20;
     await fairy.setSkill(level);
-    const { mv, evalCp, evalSide } = await fairy.moveAndEval(moves, DEPTH);
+    const teach = await fairy.moveAndEval(moves, DEPTH);
+    const mv = teach.mv;
     if (!mv) {
       aborted = "no-move";
       break;
     }
     rows.push({
       fen: st.fen,
-      eval: toStmCp(evalCp, evalSide, side),
+      eval: labelOf(teach, side),
       wdl: null,
       game: gameId,
       ply,
@@ -384,6 +425,7 @@ async function main() {
 
   const secs = (Date.now() - t0) / 1000;
   console.log("\n=== datagen smoke summary ===");
+  console.log(`labels: ${LABEL}${LABEL === "search" ? ` (depth ${DEPTH})` : " (depth 0)"}, teacher plays depth ${DEPTH}`);
   console.log(`positions: ${total} in ${games} games (${errors} errored)`);
   console.log(`elapsed: ${secs.toFixed(1)}s → ${(total / secs).toFixed(0)} pos/s aggregate`);
   console.log(`outcomes: ${JSON.stringify(outcomes)}`);
