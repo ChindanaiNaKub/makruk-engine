@@ -67,10 +67,26 @@ export const BUDGET = {
   backgroundNice: 15,
   backgroundJobs: 12,
 
-  // Y, foreground: a START GATE, and it protects the NUMBER, not your lap. A
-  // block begun on an already-hot machine runs at throttled clocks the ladder
-  // was not calibrated at, so its score is not comparable to the ledger.
-  hotStartC: 80,
+  // Y, foreground: a START GATE, and it protects the NUMBER, not your lap.
+  //
+  // CORRECTED 2026-08-02, within the hour, by the instrumentation this file
+  // shipped. The gate was first written as "refuse above 80 °C", reasoning that a
+  // throttled machine searches fewer nodes at fixed movetime. The ledger then
+  // said every arena block runs at 88-89 °C mean, and the first back-to-back run
+  // — a mandated control block followed by the block it was clearing — was
+  // refused at 91 °C. An 80 °C gate rejects every consecutive block, including
+  // Gate A followed by Gate B in an ordinary round.
+  //
+  // The reasoning was inverted: the ladder was itself calibrated by blocks run
+  // back to back, so HOT is the normal condition and a cold start is the
+  // anomaly. What actually threatens a movetime-bound measurement is CONTENTION
+  // — another process taking cores our engines needed inside their fixed 100 ms.
+  // So the gate measures that directly. Not load average, which has a 1-minute
+  // decay and reads 3.5 right after our own block while the CPU is genuinely
+  // idle; instantaneous utilisation from /proc/stat, which read 3.1% at the same
+  // moment. Temperature is still recorded on every row — it was recorded from
+  // the start precisely so this could be settled with data rather than belief.
+  busyStartFraction: 0.25,
 
   // Y, background: a runaway guard on the 60 s rolling mean. Steady state is
   // 74-84 °C at every job count, so this should never fire in normal operation —
@@ -107,6 +123,27 @@ export function packageTempC() {
       }
     }
     return tempPath ? Number(readFileSync(tempPath, "utf8")) / 1000 : NaN;
+  } catch {
+    return NaN;
+  }
+}
+
+/// Instantaneous CPU utilisation across all cores, sampled over `ms`. Deliberately
+/// not os.loadavg(): that is a 1-minute exponential average and still reads ~3.5
+/// immediately after one of our own blocks, when the machine is in fact idle.
+/// Async on purpose: a synchronous spin would burn a core for the whole sample
+/// window and inflate the very number it is measuring by ~1/ncores.
+export async function cpuBusyFraction(ms = 250) {
+  const snap = () => {
+    const f = readFileSync("/proc/stat", "utf8").split("\n", 1)[0].split(/\s+/).slice(1).map(Number);
+    return { idle: f[3] + f[4], total: f.reduce((a, b) => a + b, 0) };
+  };
+  try {
+    const a = snap();
+    await new Promise((r) => setTimeout(r, ms));
+    const b = snap();
+    const dt = b.total - a.total;
+    return dt > 0 ? 1 - (b.idle - a.idle) / dt : NaN;
   } catch {
     return NaN;
   }
@@ -186,7 +223,7 @@ const die = (msg, hint) => {
 /// Foreground gate: refuse a block that cannot fit N, and refuse one that would
 /// be measured on an already-throttled machine. Refusal beats a warning — the
 /// prose-in-AGENTS.md convention failed precisely because it could be skimmed.
-export function enforceForeground({ label, worstS, budgetMinutes, allowHot = false, overBudgetHint }) {
+export async function enforceForeground({ label, worstS, budgetMinutes, allowBusy = false, overBudgetHint }) {
   const budgetS = budgetMinutes * 60;
   if (worstS > budgetS) {
     die(
@@ -194,11 +231,11 @@ export function enforceForeground({ label, worstS, budgetMinutes, allowHot = fal
       overBudgetHint ?? "Reduce --games, or pass --budget-min N to raise the ceiling for this run."
     );
   }
-  const t = packageTempC();
-  if (Number.isFinite(t) && t >= BUDGET.hotStartC && !allowHot) {
+  const busy = await cpuBusyFraction();
+  if (Number.isFinite(busy) && busy >= BUDGET.busyStartFraction && !allowBusy) {
     die(
-      `package is ${t.toFixed(0)}°C at start, at or above the ${BUDGET.hotStartC}°C gate.`,
-      "Engines are movetime-bound: a throttled machine searches fewer nodes in the same 100 ms, so this block would not be comparable to the ledger. Wait ~2 min, or pass --allow-hot to record it anyway."
+      `${(100 * busy).toFixed(0)}% of the CPU is already busy — something else is using this machine.`,
+      "Engines are movetime-bound: contention means fewer nodes searched in the same 100 ms, so this block would not be comparable to the ledger. Stop the other work, or pass --allow-busy to record it anyway."
     );
   }
 }

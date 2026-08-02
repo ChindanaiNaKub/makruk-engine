@@ -12,7 +12,7 @@
 //   FAIRY_BIN  native fairy binary path — replaces the wasm fairy (2.4x faster)
 //   FAIRY_EVAL EvalFile for the native fairy (e.g. tools/fairy/makruk-a8c621e24a8c.nnue)
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
@@ -23,7 +23,8 @@ import { fileURLToPath } from "node:url";
 import { mulberry32, openingSeed } from "./lib/rng.mjs";
 import { preflightOrDie } from "./preflight.mjs";
 import { ensureGatesOrDie } from "./gate.mjs";
-import { appendBlock } from "./results.mjs";
+import { appendBlock, readBlocks } from "./results.mjs";
+import { preChecks, postChecks, controlVerdict, CONTROL_GAMES } from "./control-trigger.mjs";
 import { evaluate as sprtEvaluate, describe as sprtDescribe, DEFAULTS as SPRT_DEFAULTS } from "./sprt.mjs";
 import { BUDGET, announce, enforceForeground, estimateBlockS, ThermalGuard } from "./budget.mjs";
 
@@ -62,7 +63,7 @@ const CONCURRENCY = Number(arg("concurrency", String(BUDGET.arenaConcurrency)));
 // block, a diagnostic sweep). Named so it shows up in the shell history of the
 // run that used it.
 const BUDGET_MIN = arg("budget-min", null);
-const ALLOW_HOT = args.includes("--allow-hot");
+const ALLOW_BUSY = args.includes("--allow-busy");
 // Opt-in move dump for corpus-drift.mjs (rig ticket 05). Writing the MOVES and
 // letting the analysis replay them through the oracle keeps the arena's job
 // unchanged — no per-ply bookkeeping in the hot loop, and the positions the
@@ -394,6 +395,30 @@ function resolveEval(label, evalVar, weightsVar) {
   return evalVar === "net" ? `net ${path.basename(weightsVar)}` : "classic";
 }
 
+/// Runs a self-play control as a fresh child process rather than inline. It then
+/// gets its own preflight, its own budget announcement and its own ledger row —
+/// a control that shared this process's setup could not detect a fault in that
+/// setup, which is the entire thing it exists to check.
+function runControlBlock() {
+  console.log(`  → running a ${CONTROL_GAMES}-game self-play control first.\n`);
+  const r = spawnSync(
+    process.execPath,
+    [fileURLToPath(import.meta.url), "--control", "--games", String(CONTROL_GAMES), "--kind", "control",
+     "--movetime", String(MOVETIME), "--fairytime", String(MOVETIME), "--seed", String(SEED)],
+    { stdio: "inherit", env: { ...process.env, FAIRY_BIN: OUR_ENGINE, OPP_WEIGHTS: process.env.MAKURUK_WEIGHTS ?? "" } }
+  );
+  if (r.status !== 0) {
+    console.error(`\nFATAL [control] the control block itself failed (exit ${r.status}).`);
+    process.exit(5);
+  }
+  const latest = readBlocks({ includeSuspect: true }).filter((b) => b.kind === "control").at(-1);
+  if (!latest) {
+    console.error("\nFATAL [control] the control block recorded no ledger row.");
+    process.exit(5);
+  }
+  return controlVerdict(latest);
+}
+
 async function main() {
   // Substring-matching "makruk-engine" here was a latent trap: the repository
   // directory is itself named makruk-engine, so ANY path under it matched and a
@@ -424,6 +449,61 @@ async function main() {
     ensureGatesOrDie([{ name: "cargo-test" }], { quiet: false });
   }
 
+  // A block too small to resolve anything is filed as a smoke regardless of what
+  // it was asked to be — at n<8 the standard error exceeds 17 points, so calling
+  // it a gate would put a number in the ledger that cannot mean what its kind
+  // implies. Smokes are kept, just hidden from the default view.
+  const kind =
+    GAMES < 8 && KIND_OVERRIDE !== "control"
+      ? "smoke"
+      : (KIND_OVERRIDE ?? (CONTROL ? "control" : oppIsOurs ? "gate-a" : "gate-b"));
+  // The block's identity, in ledger-row shape, known before a single game is
+  // played. `armed` and the result fields are filled in at the end.
+  const identity = {
+    kind,
+    mine: {
+      engine: "ours",
+      eval: process.env.MAKURUK_EVAL === "net" ? "net" : "classic",
+      weights: process.env.MAKURUK_WEIGHTS ? path.basename(process.env.MAKURUK_WEIGHTS) : null,
+    },
+    opponent: oppIsOurs
+      ? { engine: "ours", eval: OPP_WEIGHTS ? "net" : "classic", weights: OPP_WEIGHTS ? path.basename(OPP_WEIGHTS) : null }
+      : { engine: "fairy", skill: FAIRY_SKILL, eval: FAIRY_EVAL ? "nnue" : "classical", binary: FAIRY_BIN ? "native" : "wasm" },
+    movetime: MOVETIME,
+    opponentMovetime: FAIRYTIME,
+    openingPlies: OPENING_PLIES,
+    concurrency: Math.max(1, Math.min(CONCURRENCY, GAMES_EFFECTIVE)),
+    sprt: SPRT ? {} : null,
+  };
+
+  // ---- control-block trigger, clauses (b) and (c) (rig ticket 07) ----
+  // Both are knowable before any game is played, so they run a control FIRST
+  // rather than casting doubt on a block afterwards. Automatic rather than a
+  // printed demand: a demand can be ignored, which is exactly how the
+  // prose-in-AGENTS.md convention failed. The objection to automatic was that it
+  // spends wall-clock without being asked — rig ticket 01 answered that by making
+  // every run announce its cost before it spawns anything, so nothing is
+  // unasked-for any more, and a 20-game control is ~80 s.
+  if (!CONTROL) {
+    const pre = preChecks(identity);
+    if (pre.length && args.includes("--skip-control")) {
+      console.warn(
+        `WARNING: --skip-control — ${pre.length} trigger(s) fired and NO control block was run:\n` +
+          pre.map((p) => `  [clause ${p.clause}] ${p.reason}`).join("\n") + "\n"
+      );
+    } else if (pre.length) {
+      console.log(`control block required before this run:`);
+      for (const p of pre) console.log(`  [clause ${p.clause}] ${p.reason}`);
+      const res = runControlBlock();
+      if (!res.pass) {
+        console.error(`\nFATAL [control] ${res.text}`);
+        console.error("\nThe rig cannot measure a difference it cannot reproduce as zero. Nothing was played.");
+        process.exit(5);
+      }
+      console.log(`${res.text}\n`);
+    }
+  }
+
   // ---- budget (rig ticket 01) ----
   // Announced before anything spawns, and refused rather than degraded. Gate A
   // is the accept/reject and gets the 10-minute verdict budget; a fairy block is
@@ -448,11 +528,11 @@ async function main() {
     thermal: "foreground — brief but not cool (~97 °C peak), never niced (movetime-bound)",
     extra: `ceiling ${budgetMinutes} min${BUDGET_MIN ? " (--budget-min)" : ""}`,
   });
-  enforceForeground({
+  await enforceForeground({
     label: `${GAMES_EFFECTIVE} games at concurrency ${CONCURRENCY}`,
     worstS,
     budgetMinutes,
-    allowHot: ALLOW_HOT,
+    allowBusy: ALLOW_BUSY,
     overBudgetHint: SPRT
       ? "Lower --max-pairs, or pass --budget-min N if this long a block is the point."
       : "Lower --games, or pass --budget-min N if this long a block is the point.",
@@ -675,14 +755,6 @@ async function main() {
   // can transcribe it wrong — and it does not land in a session-scoped /tmp that
   // dies with the shell that started it. See scripts/results.mjs.
   const armedOf = (label) => sides.find((s) => s.label === label)?.armed ?? null;
-  // A block too small to resolve anything is filed as a smoke regardless of what
-  // it was asked to be — at n<8 the standard error exceeds 17 points, so calling
-  // it a gate would put a number in the ledger that cannot mean what its kind
-  // implies. Smokes are kept, just hidden from the default view.
-  const kind =
-    GAMES < 8 && KIND_OVERRIDE !== "control"
-      ? "smoke"
-      : (KIND_OVERRIDE ?? (CONTROL ? "control" : oppIsOurs ? "gate-a" : "gate-b"));
   if (DUMP_GAMES) {
     writeFileSync(
       DUMP_GAMES,
@@ -692,6 +764,27 @@ async function main() {
         .join("\n") + "\n"
     );
     console.log(`dumped ${results.filter(Boolean).length} games to ${DUMP_GAMES}`);
+  }
+
+  // ---- control-block trigger, clause (a) (rig ticket 07) ----
+  // Only computable now, so the block is RECORDED — it is real data and the
+  // ledger is append-only — but marked suspect, which holds it out of the default
+  // view and out of the generated standings until a control clears it.
+  const candidate = {
+    ...identity,
+    games: issued,
+    w: score.mineWins,
+    l: score.fairyWins,
+    d: score.draws,
+    score: points / played,
+  };
+  const suspect = postChecks(candidate);
+  if (suspect.length) {
+    console.log("\nCONTROL BLOCK REQUIRED — this result tripped the trigger:");
+    for (const s of suspect) console.log(`  [clause ${s.clause}] ${s.reason}`);
+    console.log("It is recorded but held OUT of the default view until a control clears it:");
+    console.log(`  node scripts/match-arena.mjs --control --games ${CONTROL_GAMES} --kind control`);
+    console.log(`  node scripts/results.mjs --clear-suspect <thisId> --control <controlId>`);
   }
 
   const row = appendBlock({
@@ -710,6 +803,7 @@ async function main() {
           armed: armedOf("opponent"),
         }
       : { engine: "fairy", skill: FAIRY_SKILL, eval: FAIRY_EVAL ? "nnue" : "classical", binary: FAIRY_BIN ? "native" : "wasm" },
+    ...(suspect.length ? { suspect } : {}),
     games: issued,
     movetime: MOVETIME,
     opponentMovetime: FAIRYTIME,

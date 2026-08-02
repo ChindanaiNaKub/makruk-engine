@@ -29,10 +29,16 @@ import { appendFileSync, readFileSync, existsSync, mkdirSync, writeFileSync } fr
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+// Circular by design and safe: both sides export only hoisted function
+// declarations, and neither calls the other at module-evaluation time.
+import { controlVerdict } from "./control-trigger.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
-const LEDGER = path.join(root, "results", "blocks.jsonl");
+// Overridable so the suspect/clearance machinery can be integration-tested
+// against a scratch ledger instead of the committed one. Nothing in normal
+// operation sets it.
+const LEDGER = process.env.MAKURUK_LEDGER || path.join(root, "results", "blocks.jsonl");
 const AGENTS = path.join(root, "AGENTS.md");
 const MARK_BEGIN = "<!-- BEGIN GENERATED standings — node scripts/results.mjs --write-agents -->";
 const MARK_END = "<!-- END GENERATED standings -->";
@@ -56,19 +62,63 @@ export function readRaw() {
 /// Live blocks, with retractions applied. A retracted block keeps its row — it
 /// is annotated, never removed, because "why was this wrong" is exactly the
 /// question a future session needs answered.
-export function readBlocks({ includeRetracted = false } = {}) {
+const META_TYPES = new Set(["retraction", "clearance"]);
+
+/// Live blocks, with retractions applied. A retracted block keeps its row — it
+/// is annotated, never removed, because "why was this wrong" is exactly the
+/// question a future session needs answered.
+///
+/// A SUSPECT block (rig ticket 07) is one whose result tripped the control-block
+/// trigger: it is real data, so it is recorded, but it is held out of the default
+/// view and out of the generated standings until a passing control block clears
+/// it. That exclusion is the whole point — a warning nobody has to act on is the
+/// convention that already failed once.
+export function readBlocks({ includeRetracted = false, includeSuspect = false } = {}) {
   const raw = readRaw();
   const retractions = new Map();
-  for (const r of raw) if (r.type === "retraction") retractions.set(r.retracts, r);
-  const blocks = raw
-    .filter((r) => r.type !== "retraction")
-    .map((b) => ({ ...b, retraction: retractions.get(b.id) ?? null }));
-  return includeRetracted ? blocks : blocks.filter((b) => !b.retraction);
+  const clearances = new Map();
+  for (const r of raw) {
+    if (r.type === "retraction") retractions.set(r.retracts, r);
+    else if (r.type === "clearance") clearances.set(r.clears, r);
+  }
+  let blocks = raw
+    .filter((r) => !META_TYPES.has(r.type))
+    .map((b) => ({
+      ...b,
+      retraction: retractions.get(b.id) ?? null,
+      clearance: clearances.get(b.id) ?? null,
+      // Suspect only while uncleared.
+      suspectOpen: b.suspect?.length ? !clearances.has(b.id) : false,
+    }));
+  if (!includeRetracted) blocks = blocks.filter((b) => !b.retraction);
+  if (!includeSuspect) blocks = blocks.filter((b) => !b.suspectOpen);
+  return blocks;
 }
 
 function nextId() {
-  const n = readRaw().filter((r) => r.type !== "retraction").length;
+  const n = readRaw().filter((r) => !META_TYPES.has(r.type)).length;
   return "b" + String(n + 1).padStart(4, "0");
+}
+
+/// Clear a suspect block with a control that actually passed. The control id is
+/// mandatory and is verified here rather than trusted: "I ran a control" is the
+/// kind of claim that decays into nobody having run one.
+export function clearSuspect(id, controlId) {
+  const all = readBlocks({ includeRetracted: true, includeSuspect: true });
+  const target = all.find((b) => b.id === id);
+  if (!target) throw new Error(`no block ${id} in the ledger`);
+  if (!target.suspect?.length) throw new Error(`${id} is not suspect — nothing to clear`);
+  if (target.clearance) throw new Error(`${id} was already cleared by ${target.clearance.control}`);
+  const control = all.find((b) => b.id === controlId);
+  if (!control) throw new Error(`no block ${controlId} in the ledger`);
+  if (control.kind !== "control") throw new Error(`${controlId} is kind '${control.kind}', not a control block`);
+  const v = controlVerdict(control);
+  if (!v.pass) throw new Error(`${controlId} did not pass: ${v.text}`);
+  appendFileSync(
+    LEDGER,
+    JSON.stringify({ type: "clearance", clears: id, control: controlId, ts: new Date().toISOString() }) + "\n"
+  );
+  return { target, control, verdict: v };
 }
 
 /// Called by match-arena at the end of a block. Everything needed to reproduce
@@ -123,7 +173,7 @@ export function table(blocks) {
     // Shown as "—", never reconstructed from the score fraction.
     b.w == null ? "—" : `${b.w}–${b.l}–${b.d}${b.maxPlies ? ` (${b.maxPlies} mp)` : ""}`,
     pct(b),
-    b.retraction ? "**RETRACTED**" : "",
+    b.retraction ? "**RETRACTED**" : b.suspectOpen ? "**SUSPECT**" : b.clearance ? `cleared by ${b.clearance.control}` : "",
   ]);
   const head = ["id", "kind", "ours", "opponent", "n", "W–L–D", "score", ""];
   const out = [`| ${head.join(" | ")} |`, `|${head.map(() => "---").join("|")}|`];
@@ -167,14 +217,28 @@ if (invokedDirectly) {
   const argv = process.argv.slice(2);
   const arg = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 ? argv[i + 1] : d; };
 
+  // These refuse for good reasons — an unreadable stack trace turns a clear
+  // "no, and here is why" into something that looks like a crash.
+  const guarded = (fn) => {
+    try { fn(); } catch (e) { console.error(`refused: ${e.message}`); process.exit(2); }
+  };
+
   if (argv.includes("--write-agents")) {
     writeAgents();
   } else if (argv.includes("--retract")) {
-    const t = retract(arg("retract"), arg("reason"));
-    console.log(`retracted ${t.id} (${sideLabel(t.mine)} vs ${sideLabel(t.opponent)}, ${pct(t)}) — the row stays, annotated.`);
+    guarded(() => {
+      const t = retract(arg("retract"), arg("reason"));
+      console.log(`retracted ${t.id} (${sideLabel(t.mine)} vs ${sideLabel(t.opponent)}, ${pct(t)}) — the row stays, annotated.`);
+    });
+  } else if (argv.includes("--clear-suspect")) {
+    guarded(() => {
+      const { target, verdict } = clearSuspect(arg("clear-suspect"), arg("control"));
+      console.log(verdict.text);
+      console.log(`cleared ${target.id} (${pct(target)}) — it rejoins the default view.`);
+    });
   } else {
     const all = argv.includes("--all");
-    let blocks = readBlocks({ includeRetracted: all });
+    let blocks = readBlocks({ includeRetracted: all, includeSuspect: all });
     const kind = arg("kind");
     // Diagnostics and smokes stay in the ledger but out of the default view:
     // they are real records of real runs, and they are not results. Ask for them
@@ -188,11 +252,18 @@ if (invokedDirectly) {
         console.log(`\n${b.id} RETRACTED: ${b.retraction.reason}`);
       }
     } else {
-      const hidden = readBlocks({ includeRetracted: true }).filter((b) => b.retraction).length;
+      const everything = readBlocks({ includeRetracted: true, includeSuspect: true });
+      const hidden = everything.filter((b) => b.retraction).length;
+      const suspect = everything.filter((b) => b.suspectOpen && !b.retraction);
       const notes = [];
       if (hidden) notes.push(`${hidden} retracted — --all to see them and why`);
+      if (suspect.length) notes.push(`${suspect.length} SUSPECT, awaiting a control block — --all to see them`);
       if (hiddenNoise) notes.push(`${hiddenNoise} smoke/diag — --kind smoke or --kind diag`);
       if (notes.length) console.log(`\n(${notes.join("; ")})`);
+      for (const b of suspect) {
+        console.log(`\n${b.id} SUSPECT: ${b.suspect.map((s) => `[clause ${s.clause}] ${s.reason}`).join("; ")}`);
+        console.log(`  → run a control, then: node scripts/results.mjs --clear-suspect ${b.id} --control <controlId>`);
+      }
     }
   }
 }

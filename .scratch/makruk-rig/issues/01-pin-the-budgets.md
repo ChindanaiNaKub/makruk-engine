@@ -76,10 +76,13 @@ budget only becomes enforceable once they are separated:
 | **foreground** | arena blocks — you are sitting there waiting for a verdict | wall-clock | N |
 | **background** | datagen, training — you walked away | heat and your laptop | consent |
 
-The split is forced by the evidence. Arena runs are minutes long and peak at 69 °C; datagen is
-~an hour and sits at 74–84 °C with 84–99 °C peaks *at every job count*. No single budget describes
-both, and the one that was implicitly being applied — "keep the whole rig under some core count" —
-was the wrong instrument for either.
+The split is forced by the evidence: arena runs are **minutes**, datagen is **an hour**. No single
+budget describes both, and the one that was implicitly being applied — "keep the whole rig under
+some core count" — was the wrong instrument for either.
+
+(The split was first justified as "the arena is cool and datagen is hot." That was wrong and this
+ticket's own instrumentation disproved it within the hour — see *The instrumentation falsified an
+inherited number* below. **Brevity**, not coolness, is what separates the classes.)
 
 ### N — wall-clock: **15 min, and the unit is Gate A**
 
@@ -129,9 +132,9 @@ with 320,794 accumulated throttle events and every power knob already at maximum
 keeps the laptop comfortable is not available at any tuning. So Y was re-aimed at the thing it
 *can* protect:
 
-- **80 °C start gate on the arena.** A block begun on an already-throttled machine searches fewer
-  nodes in the same 100 ms than the ladder was calibrated at, so its score is not comparable to the
-  ledger. Refuses; `--allow-hot` overrides.
+- ~~**80 °C start gate on the arena.**~~ **CORRECTED the same day — see the amendment below.** The
+  gate is now on CPU contention, not temperature: refuses when >25% of the CPU is already busy;
+  `--allow-busy` overrides.
 - **95 °C / 60 s runaway guard on background work.** Steady state is 74–84 °C, so this never fires
   under normal load — it catches a blocked vent or a dead fan.
 - **Every block now records `tempStartC` / `tempMeanC` / `tempPeakC` in the ledger,** so the 80 °C
@@ -160,10 +163,10 @@ stop. A budget breach must change the *plan*, not the *conditions*.
 - `scripts/sprt-cap-sweep.mjs` — the evidence for the cap, kept runnable so the number can be
   re-earned rather than inherited.
 - `sprt.mjs` `maxPairs` 400 → 96; `match-arena.mjs` announce + refuse + hot gate + ledger thermals
-  + `--budget-min` / `--allow-hot`; `datagen.mjs` announce + consent + nice + runaway guard.
+  + `--budget-min` / `--allow-busy`; `datagen.mjs` announce + consent + nice + runaway guard.
 
 Verified: all six enforcement paths unit-tested (over-budget → exit 3, `--budget-min` allows,
-hot-start → exit 3, `--allow-hot` allows, latency floor, datagen estimate); a 4-game arena block
+busy-start → exit 3, `--allow-busy` allows, latency floor, datagen estimate); a 4-game arena block
 and a 4,305-row datagen run end-to-end; `cargo test --release` 9/9, mirror-perft and preflight
 green. One bug found and fixed in the process: the first estimator ignored the latency-bound
 regime and announced 12 s for a block that took 34 s.
@@ -184,6 +187,28 @@ one and consent the right currency for the other.
 Two candidate explanations, unresolved: the 69 °C may have been a steady-state mean rather than a
 peak, or measured on a colder machine. Left in the map's *Not yet specified* rather than guessed at —
 every block now carries its own thermals, so this settles itself with data instead of argument.
+
+### Amendment 2026-08-02 — the 80 °C start gate was wrong, and the rig caught it
+
+Fixing [the control-block trigger](07-control-block-trigger.md) produced the first back-to-back run
+this rig has ever done: a mandated control block, then the block it was clearing. The control ran,
+passed — and the main block was then **refused at 91 °C by this ticket's own hot-start gate.**
+
+The gate rejects the normal case. Ledger rows say every arena block runs at **88–89 °C mean**, so an
+80 °C start gate refuses *every* consecutive block, including Gate A followed by Gate B in an
+ordinary round. The reasoning was inverted: the ladder was itself calibrated by blocks run back to
+back, so **hot is the calibrated condition and a cold start is the anomaly.**
+
+What actually threatens a movetime-bound measurement is **contention** — another process taking
+cores our engines needed inside their fixed 100 ms. So the gate now measures that directly, and
+specifically *not* by load average: immediately after one of our own blocks, `loadavg[0]` read
+**3.51** (a 1-minute exponential decay of our own finished work) while instantaneous utilisation
+from `/proc/stat` read **3.1%**. A load-average gate would have reproduced the same false refusal.
+
+**Now: refuse when >25% of the CPU is already busy** (`BUDGET.busyStartFraction`, `--allow-busy` to
+override). Temperature recording stays exactly as it was — it was shipped so this could be settled
+with data instead of belief, and it settled it within the hour. The relevant fog patch on the map
+("Is the 80 °C hot-start gate real?") is closed by this amendment rather than left to age.
 
 ### Consequences for the rest of the map
 
