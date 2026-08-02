@@ -22,23 +22,29 @@ Rust Makruk engine. Sole rule authority: markrukthai `shared/engine.ts` + `share
 
 ## Strength gate
 `node scripts/match-arena.mjs --games 16 --skill N --movetime 100 --fairytime 100` (drop `--fairytime` and fairy gets 4×).
-**Where we actually are — the randomized-opening ladder, 32 games each, equal 100/100 vs native fairy classical (first trustworthy numbers; every earlier arena figure predates the opening fix):**
+**Every block ever played lives in `results/blocks.jsonl`** — append-only, committed, written by the arena itself. `node scripts/results.mjs` for the live view, `--all` to see retracted blocks *and why*. Rows are never edited or deleted; a retraction is a new row, so a number can be superseded without the reasoning being lost and without a stale figure surviving in prose. **Do not hand-copy a score into this file or the spec** — the table below is generated.
 
-| our eval | fairy skill | W–L–D (max-plies) | score |
-|---|---|---|---|
-| classic | 3 | 9–17–6 (0) | 37.5% |
-| **r3 net** | **3** | **15–13–3 (1)** | **53.1% — Gate B PASS** |
-| r3 net | 5 | 6–15–9 (2) | 35.9% |
-| r3 net | 10 | 0–32–0 (0) | **0.0%** |
-| r3 net | 20 | 0–32–0 (0) | **0.0%** |
+<!-- BEGIN GENERATED standings — node scripts/results.mjs --write-agents -->
+
+_Generated from `results/blocks.jsonl` (5 live blocks). Do not hand-edit — run `node scripts/results.mjs --write-agents`._
+
+| id | kind | ours | opponent | n | W–L–D | score |  |
+|---|---|---|---|---|---|---|---|
+| b0001 | gate-b | classic | fairy skill 3 | 32 | 9–17–6 | 37.5% |  |
+| b0002 | gate-b | net 4452f72612f1 | fairy skill 3 | 32 | 15–13–3 (1 mp) | 53.1% |  |
+| b0003 | gate-b | net 4452f72612f1 | fairy skill 5 | 32 | 6–15–9 (2 mp) | 35.9% |  |
+| b0004 | gate-b | net 4452f72612f1 | fairy skill 10 | 32 | 0–32–0 | 0.0% |  |
+| b0005 | gate-b | net 4452f72612f1 | fairy skill 20 | 32 | 0–32–0 | 0.0% |  |
+
+<!-- END GENERATED standings -->
 
 **Skill 10, 15 and 20 are one wall, not three rungs** — 0/32 with zero draws at both ends. **Fairy's Skill Level does not cap its search depth:** at `movetime 100` from startpos it reaches depth 10 / ~120k nodes at skill 3, 5, 8, 10 *and* 15, and depth 12 at skill 20. Skill only degrades which move it picks from that search. Our net reaches depth 5 at the same movetime (classic reaches 8), so above skill ~8 we are playing a depth-10 opponent 5 plies short and the noise that used to save us is gone. **Gate new artifacts at skill 3–5**; skill ≥10 returns 0–32 for every artifact and resolves nothing.
-**Gating protocol is spec §5.1:** Gate A = 64 games head-to-head vs the incumbent (`OPP_WEIGHTS=<incumbent.bin>` arms the opponent side with a net; without it the opponent plays classic), pass ≥55%. Gate B = 32 games vs fairy at the current rung, advance ≥50%. A round needs Gate A pass **and** no Gate B regression — r3 beats classic 70.3% head-to-head but ties it against fairy skill 3, so Gate A alone can be gamed by exploiting the incumbent. Max-plies games count as draws (they are unconverted games, not errors) and the abort rate is a metric: ~25% among our own engines, ~3% vs fairy.
+**Gating protocol is spec §5.1:** Gate A = 64 games head-to-head vs the incumbent (`OPP_WEIGHTS=<incumbent.bin>` arms the opponent side with a net; without it the opponent plays classic), pass ≥55%. Gate B = 32 games vs fairy at the current rung, advance ≥50%. A round needs Gate A pass **and** no Gate B regression — Gate A alone can be gamed by exploiting the incumbent, since a candidate can beat it head-to-head without gaining anything against fairy. (The head-to-head figure that motivated this is retracted — `node scripts/results.mjs --all`.) Max-plies games count as draws (they are unconverted games, not errors) and the abort rate is a metric: ~25% among our own engines, ~3% vs fairy.
 **Arena numbers recorded before 2026-08-02's opening-randomization fix are suspect** — every game started from startpos and both engines are near-deterministic, so an N-game block was not N samples. `--opening-plies 4` (default) now plays seeded random openings, each twice with colors reversed; `--seed S` reproduces a block. A 6-game skill-3 smoke went 6–0 where a 32-game non-randomized block read 34.4%.
 **The rig now proves itself before it runs — you cannot skip it.** `scripts/preflight.mjs` is a hard precondition inside `match-arena.mjs` and `datagen.mjs` (sub-second, exit 2 on failure): env shape, **armed eval matches requested eval**, sides actually differ, seeds reproduce, startpos perft(3) = 12012. Run it standalone with `node scripts/preflight.mjs`. A self-play control block has identical sides on purpose — pass `--control` to opt out of the sides-differ check; without it, identical sides are a fatal error, which is the point. The engine reports what it armed via the UCI **`evalinfo`** command (`nnue::eval_id()`): a net→classic fallback used to be an `eprintln!` invisible to the harness, and is now an assertion failure.
 `scripts/gate.mjs` hash-gates the expensive preconditions — `cargo-test` (auto, before every arena block; `--skip-gates` warns loudly), `mirror-perft`, and `label-check` (auto, at the end of every datagen run, fatal below r = 0.3). Gates skip when their inputs' **contents** are unchanged, keeping the last 8 passing hashes so a revert or branch flip is free. Cache: `.gatecache.json` (gitignored) — delete it to re-run everything.
 **Never use `env $var node …` in a driver script** — zsh does not word-split unquoted parameters, so `MAKURUK_EVAL` silently became `"net MAKURUK_WEIGHTS=/path"` and three "net" blocks measured the classical eval. Use inline prefix assignments. match-arena now fatals on a malformed `MAKURUK_EVAL` and prints each side's eval before every block.
-Standings: Gate A (pre-randomization) — r3 vs classic 70.3% PASS, d6 vs r3 45.3% FAIL (d6 rejected, **r3 incumbent**). Gate B (randomized, trustworthy) — see the ladder table above: r3 passes skill 3, current rung is **skill 5 at 35.9%**.
+**Current state (identities and rung, not measurements — for those read the ledger):** incumbent is `out/r3fixed/lam0.97/makruk-tiny-v1-4452f72612f1.bin`; d6 is rejected; the Gate B rung is **skill 5**, r3 having cleared skill 3.
 **Do NOT select artifacts on probe top-1.** Round 5's depth-6-label net scored the best probe ever (40.0% vs r3's 38.1%) and played no better than the classical eval at skill 2 (66.7% both) while shuffling 5× more. Probe = eval-fit diagnostic; a 16-game skill-2 block (~4 min) is the strength gate. Read the shuffle line under the probe — it caught the regression the top-1 number hid.
 Fast proxy gate: `node scripts/strength-probe.mjs --movetime 100` (add `MAKURUK_EVAL=net MAKURUK_WEIGHTS=...` for a net) — top-1 vs fairy depth-12 labels on `tests/fixtures/probe-v1.jsonl`, ~65 s. **movetime must be ≥100** (`src/search.rs:177` makes 50 ms depth-1). Rebuild the set with `scripts/probe-build.mjs`. Baselines: classic 34.4%, v1 22.2%, r2 19.7%.
 `--nodes N` / `--depth N` equalize search effort instead: net eval runs ~332k nps vs classic ~885k, so a movetime probe scores eval quality and eval speed together. **Gate on movetime** (that is how it plays); use `--nodes 20000` to diagnose. At equal nodes: classic 33.4%, v1 21.6%, r2 18.1%.

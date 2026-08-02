@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { mulberry32, openingSeed } from "./lib/rng.mjs";
 import { preflightOrDie } from "./preflight.mjs";
 import { ensureGatesOrDie } from "./gate.mjs";
+import { appendBlock } from "./results.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -44,6 +45,9 @@ const SEED = Number(arg("seed", "7"));
 // Self-play control blocks run identical evals on both sides on purpose, so the
 // preflight identical-sides check has to be opt-out. See preflight.mjs check 3.
 const CONTROL = args.includes("--control");
+// Ledger classification. Inferred by default so a block is never filed as the
+// wrong kind through forgetfulness; --kind overrides for smokes and one-offs.
+const KIND_OVERRIDE = arg("kind", null);
 
 const FAIRY_DIR =
   process.env.FAIRY_DIR || path.resolve(root, "..", "markrukthai-1", "node_modules");
@@ -485,6 +489,42 @@ async function main() {
         `  Plausible at a rung where one side is simply outclassed (skill 10/20 both read 0–32–0), suspicious anywhere else.`
     );
   }
+
+  // The arena records its own result. Nothing transcribes the number, so nothing
+  // can transcribe it wrong — and it does not land in a session-scoped /tmp that
+  // dies with the shell that started it. See scripts/results.mjs.
+  const armedOf = (label) => sides.find((s) => s.label === label)?.armed ?? null;
+  const kind = KIND_OVERRIDE ?? (CONTROL ? "control" : oppIsOurs ? "gate-a" : "gate-b");
+  const row = appendBlock({
+    kind,
+    mine: {
+      engine: "ours",
+      eval: process.env.MAKURUK_EVAL === "net" ? "net" : "classic",
+      weights: process.env.MAKURUK_WEIGHTS ? path.basename(process.env.MAKURUK_WEIGHTS) : null,
+      armed: armedOf("mine"),
+    },
+    opponent: oppIsOurs
+      ? {
+          engine: "ours",
+          eval: OPP_WEIGHTS ? "net" : "classic",
+          weights: OPP_WEIGHTS ? path.basename(OPP_WEIGHTS) : null,
+          armed: armedOf("opponent"),
+        }
+      : { engine: "fairy", skill: FAIRY_SKILL, eval: FAIRY_EVAL ? "nnue" : "classical", binary: FAIRY_BIN ? "native" : "wasm" },
+    games: GAMES,
+    movetime: MOVETIME,
+    opponentMovetime: FAIRYTIME,
+    openingPlies: OPENING_PLIES,
+    seed: SEED,
+    w: score.mineWins,
+    l: score.fairyWins,
+    d: score.draws,
+    maxPlies: score.maxPly,
+    errors: score.errors,
+    score: points / played,
+    perGame: results.map((r) => ({ tag: r.tag, plies: r.plies })),
+  });
+  console.log(`\nrecorded as ${row.id} in results/blocks.jsonl`);
   process.exit(0);
 }
 

@@ -1,8 +1,8 @@
 # Implement the conditional control-block trigger
 
 Type: task
-Status: open
-Blocked by: 06-where-results-live.md
+Status: open — **unblocked 2026-08-02**
+Blocked by:
 Parent: map.md
 
 ## Question
@@ -11,7 +11,11 @@ Parent: map.md
 
 > (a) a block's result deviates from the trend line by more than the SE band (~8.8 points at n=32), or (b) a new **binding mechanism** is introduced — a new env var, a new opponent type, a new config axis (explicitly **not** a new weight) — or (c) it is the first block at a new rung.
 
-Mechanisms 1–3 of that ticket shipped. This one could not, because **clause (a) needs a trend line and there is no machine-readable record of past blocks to compute one from** — which is exactly what [Where do results live?](06-where-results-live.md) decides. The capability itself exists: `match-arena.mjs --control` runs identical sides with the `sides-differ` assertion opted out, and an r3-vs-r3 block through it reads 50.0%.
+Mechanisms 1–3 of that ticket shipped. This one could not, because clause (a) needed a trend line and there was no machine-readable record of past blocks to compute one from.
+
+**That blocker is now gone.** [Where do results live?](06-where-results-live.md) shipped `results/blocks.jsonl` — append-only, committed, written by the arena itself, and backfilled with the five randomized-ladder blocks plus two retracted Gate A rows. Read it with `readBlocks()` from `scripts/results.mjs`. The control capability itself also exists: `match-arena.mjs --control` runs identical sides with the `sides-differ` assertion opted out.
+
+Note when building clause (b): the ledger already stores each side's `armed` string and the full env-relevant identity per row, so "a previously-unseen binding combination" is computable from the ledger rather than needing new bookkeeping.
 
 To implement once the ledger exists:
 
