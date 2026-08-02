@@ -147,6 +147,37 @@ UCI wire protocol unchanged; the weights path is worker config — no `browserEn
 
 ## Execution log
 
+**Ladder re-measurement — 2026-08-02, post-randomization: the first trustworthy arena numbers. r3 CLEARS Gate B at skill 3 (53.1%). Skill 10 / 15 / 20 are a single wall, and the reason is search depth, not skill noise.**
+
+Five 32-game blocks, randomized openings, equal 100 ms/100 ms vs native fairy classical. These supersede every arena figure recorded earlier in this document.
+
+| our eval | fairy skill | W–L–D (max-plies) | score |
+|---|---|---|---|
+| classic | 3 | 9–17–6 (0) | 37.5% |
+| **r3 net** | **3** | **15–13–3 (1)** | **53.1% — PASS, rung advances to 5** |
+| r3 net | 5 | 6–15–9 (2) | 35.9% |
+| r3 net | 10 | 0–32–0 (0) | 0.0% |
+| r3 net | 20 | 0–32–0 (0) | 0.0% |
+
+Two things follow that the §9 ladder (3 → 5 → 8 → 10 → 15 → 20) assumed away.
+
+**The upper rungs are not rungs.** Skill 10 and skill 20 return the identical 0–32–0 — not a single draw in 64 games. Whatever separates skill 10 from skill 20 is invisible from where we stand, so "≥50% at skill 20" is not one gate harder than "≥50% at skill 10"; it is the same gate. M5's claim tier and the 15/20 rungs cannot be reached incrementally through the ladder as specified.
+
+**Skill Level does not throttle fairy's depth.** Measured from startpos at `movetime 100`, waiting for `bestmove`:
+
+| skill | depth reached | nodes |
+|---|---|---|
+| 3 | 10 | 123,559 |
+| 5 | 10 | 123,559 |
+| 8 | 10 | 115,014 |
+| 10 | 10 | 116,460 |
+| 15 | 10 | 123,559 |
+| 20 | 12 | 116,512 |
+
+Fairy searches to depth 10 at *every* rung below 20 and only degrades which move it takes from that search. So the ladder is a move-quality-noise ladder, not a strength-of-search ladder: at skill 3 we beat a depth-10 engine that is throwing moves away, and at skill 10 we face the same search playing near its best. Our net reaches **depth 5** at 100 ms (classic reaches 8, because net eval runs ~332k nps against classic's ~885k). The gap at the top of the ladder is ~5 plies against an opponent whose eval is also mature — that is not a deficit more DAgger rounds close.
+
+**Unexploited lever, cheap in both wall-clock and thermals:** §7 specifies an *incremental* accumulator updated through `do_move`/`undo_move` and an nps ≥ 500k gate. Neither was implemented. `nnue::net_score` calls `encode(game)` per node, which allocates a fresh `Vec<u32>` and re-sums all ~32 active feature columns (768→256) from scratch every eval. The tail (266→32→32→3, ~9.6k MAC) is irreducible, so incremental updates plus removing the per-node allocation is worth well under the 3 plies the net is behind classic — but it is the one remaining item on the spec's own critical path that costs no datagen and no training.
+
 **M4 round 5 — 2026-08-02: deeper labels worked exactly as the ceiling predicted and produced a WEAKER engine. The probe metric that has steered rounds 3–5 does not predict play, and the ladder was calibrated against the wrong opponent — at equal time we sit at fairy skill ~2.5, not "even at 5".**
 
 `scripts/datagen.mjs --label search` labels each row with the score of the `go depth DEPTH` search that already runs to pick the teacher's move — depth-N labels for ~1.5× the datagen time (1,902 pos/s at depth 6 vs 2,900 at depth 3), because the search was being computed and discarded. `tools/data/bootstrap-d6.jsonl`: 10,002,800 rows, 50,029 games, 90 min. `scripts/label-check.mjs` (new) reads r = 0.882 against our classic eval, correct sign, with 2.2% of rows at |cp| > 2000 against the static labels' 0% — the search finding forced wins a material eval cannot see.

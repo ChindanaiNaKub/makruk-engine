@@ -22,11 +22,21 @@ Rust Makruk engine. Sole rule authority: markrukthai `shared/engine.ts` + `share
 
 ## Strength gate
 `node scripts/match-arena.mjs --games 16 --skill N --movetime 100 --fairytime 100` (drop `--fairytime` and fairy gets 4×).
-**Where we actually are, at equal 100/100 vs native fairy classical: skill 0 → 14–0–2, skill 2 → 7–2–6, skill 3 → 4–7–5, skill 5 → 0–14, skill 10 → 0–14–2. Crossover is skill ~2.5 of 20.** (The old "~even at 5, shut out at 10" line was wasm fairy with a 4× handicap and predates `tools/fairy/`.) **Gate new artifacts at skill 2–3** — skill 10 is ~7 rungs above our play and returns 0–16 for every artifact, which resolves nothing.
+**Where we actually are — the randomized-opening ladder, 32 games each, equal 100/100 vs native fairy classical (first trustworthy numbers; every earlier arena figure predates the opening fix):**
+
+| our eval | fairy skill | W–L–D (max-plies) | score |
+|---|---|---|---|
+| classic | 3 | 9–17–6 (0) | 37.5% |
+| **r3 net** | **3** | **15–13–3 (1)** | **53.1% — Gate B PASS** |
+| r3 net | 5 | 6–15–9 (2) | 35.9% |
+| r3 net | 10 | 0–32–0 (0) | **0.0%** |
+| r3 net | 20 | 0–32–0 (0) | **0.0%** |
+
+**Skill 10, 15 and 20 are one wall, not three rungs** — 0/32 with zero draws at both ends. **Fairy's Skill Level does not cap its search depth:** at `movetime 100` from startpos it reaches depth 10 / ~120k nodes at skill 3, 5, 8, 10 *and* 15, and depth 12 at skill 20. Skill only degrades which move it picks from that search. Our net reaches depth 5 at the same movetime (classic reaches 8), so above skill ~8 we are playing a depth-10 opponent 5 plies short and the noise that used to save us is gone. **Gate new artifacts at skill 3–5**; skill ≥10 returns 0–32 for every artifact and resolves nothing.
 **Gating protocol is spec §5.1:** Gate A = 64 games head-to-head vs the incumbent (`OPP_WEIGHTS=<incumbent.bin>` arms the opponent side with a net; without it the opponent plays classic), pass ≥55%. Gate B = 32 games vs fairy at the current rung, advance ≥50%. A round needs Gate A pass **and** no Gate B regression — r3 beats classic 70.3% head-to-head but ties it against fairy skill 3, so Gate A alone can be gamed by exploiting the incumbent. Max-plies games count as draws (they are unconverted games, not errors) and the abort rate is a metric: ~25% among our own engines, ~3% vs fairy.
 **Arena numbers recorded before 2026-08-02's opening-randomization fix are suspect** — every game started from startpos and both engines are near-deterministic, so an N-game block was not N samples. `--opening-plies 4` (default) now plays seeded random openings, each twice with colors reversed; `--seed S` reproduces a block. A 6-game skill-3 smoke went 6–0 where a 32-game non-randomized block read 34.4%.
 **Never use `env $var node …` in a driver script** — zsh does not word-split unquoted parameters, so `MAKURUK_EVAL` silently became `"net MAKURUK_WEIGHTS=/path"` and three "net" blocks measured the classical eval. Use inline prefix assignments. match-arena now fatals on a malformed `MAKURUK_EVAL` and prints each side's eval before every block.
-Standings (pre-randomization, re-measure): Gate A — r3 vs classic 70.3% PASS, d6 vs r3 45.3% FAIL (d6 rejected, r3 incumbent). Gate B skill 2 — classic 35.9%, r3 75.0%.
+Standings: Gate A (pre-randomization) — r3 vs classic 70.3% PASS, d6 vs r3 45.3% FAIL (d6 rejected, **r3 incumbent**). Gate B (randomized, trustworthy) — see the ladder table above: r3 passes skill 3, current rung is **skill 5 at 35.9%**.
 **Do NOT select artifacts on probe top-1.** Round 5's depth-6-label net scored the best probe ever (40.0% vs r3's 38.1%) and played no better than the classical eval at skill 2 (66.7% both) while shuffling 5× more. Probe = eval-fit diagnostic; a 16-game skill-2 block (~4 min) is the strength gate. Read the shuffle line under the probe — it caught the regression the top-1 number hid.
 Fast proxy gate: `node scripts/strength-probe.mjs --movetime 100` (add `MAKURUK_EVAL=net MAKURUK_WEIGHTS=...` for a net) — top-1 vs fairy depth-12 labels on `tests/fixtures/probe-v1.jsonl`, ~65 s. **movetime must be ≥100** (`src/search.rs:177` makes 50 ms depth-1). Rebuild the set with `scripts/probe-build.mjs`. Baselines: classic 34.4%, v1 22.2%, r2 19.7%.
 `--nodes N` / `--depth N` equalize search effort instead: net eval runs ~332k nps vs classic ~885k, so a movetime probe scores eval quality and eval speed together. **Gate on movetime** (that is how it plays); use `--nodes 20000` to diagnose. At equal nodes: classic 33.4%, v1 21.6%, r2 18.1%.
@@ -45,7 +55,13 @@ Training (spec §4): `training/venv/bin/python -m training.train --data tools/da
 
 ## Strength program (wayfinder)
 
-Active effort: "Road to fairy full-strength parity" — map + tickets at `.scratch/makruk-strength/` (local-markdown tracker). Spec: `docs/strength-spec-v1.md`. Benchmark/opponent assets (gitignored): `tools/fairy/` (native Fairy-Stockfish 14 + official makruk NNUE); match-arena supports `FAIRY_BIN`/`FAIRY_EVAL` env overrides.
+**Active effort: "A Rig You Can Trust and Afford" — map + tickets at `.scratch/makruk-rig/`.** Destination: a candidate earns an accept/reject decision inside a pinned wall-clock budget and under a pinned thermal ceiling, and a wrong number cannot silently survive a round. This map **carries execution** (tickets build, not just decide). Frontier: *Pin the budgets*, *How does the rig prove a number before anyone acts on it?*, *Where do results live?*
+
+**Machine budget (measured 2026-08-02).** i5-12500H, 4P+8E / 16 threads, PL1 45 W. A Gate A + Gate B round is **96 games ≈ 23 min serial on 2 of 16 cores** — arena games are ~95% movetime-bound (`plies × 0.1 s`), so there is no harness overhead to reclaim. **Datagen is the whole cost**: 12 jobs → 2,897 pos/s at 83 °C steady / 97 °C peak, and the box sits at 74–83 °C under *any* sustained multicore load. `node scripts/thermal-sweep.mjs` measures the job-count curve. **Thermal arms have a ~±4–5 °C noise floor** — a provably-inert change (`platform_profile` performance→balanced, which moved no RAPL limit) shifted arms ±5 in both directions. Don't read a sub-10 °C gap from one pass as real.
+
+**Strength work is PARKED, not abandoned** — no DAgger rounds, no net or eval-speed changes, no ladder advancement until the rig map closes. The ladder re-measurement (see the Strength gate table) showed skill 10/15/20 is a single wall and fairy searches depth 10 at *every* rung below 20, so "≥50% vs skill 20" needs redrawing first; that redraw is a fresh map taken up after this one.
+
+Predecessor (done): "Road to fairy full-strength parity" — `.scratch/makruk-strength/` → `docs/strength-spec-v1.md`. Benchmark/opponent assets (gitignored): `tools/fairy/` (native Fairy-Stockfish 14 + official makruk NNUE); match-arena supports `FAIRY_BIN`/`FAIRY_EVAL` env overrides.
 
 ## Repo relationship
 Sibling repo `markrukthai-1` is the consumer; keep wire protocol compatible with `client/src/workers/browserEngineBotWorker.ts` (uci/uciok/position/go movetime/bestmove). mirror-perft.mjs points at its `node_modules` by default (`FAIRY_DIR` overrides).
