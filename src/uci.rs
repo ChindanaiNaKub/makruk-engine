@@ -66,6 +66,9 @@ impl UciEngine {
                 out
             }
             "d" => vec![self.describe()],
+            // Preflight hook: forces eval resolution and reports what was armed,
+            // so a silent net->classic fallback cannot survive into a gate block.
+            "evalinfo" => vec![format!("info string evalinfo {}", crate::nnue::eval_id())],
             "eval" => vec![format!(
                 "eval {}",
                 crate::eval::evaluate(&self.game, 0)

@@ -18,6 +18,9 @@ import { readFile } from "node:fs/promises";
 import readline from "node:readline";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { mulberry32, openingSeed } from "./lib/rng.mjs";
+import { preflightOrDie } from "./preflight.mjs";
+import { ensureGatesOrDie } from "./gate.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -38,6 +41,9 @@ const MAX_PLIES = 400;
 // 0 restores the old every-game-from-startpos behaviour.
 const OPENING_PLIES = Number(arg("opening-plies", "4"));
 const SEED = Number(arg("seed", "7"));
+// Self-play control blocks run identical evals on both sides on purpose, so the
+// preflight identical-sides check has to be opt-out. See preflight.mjs check 3.
+const CONTROL = args.includes("--control");
 
 const FAIRY_DIR =
   process.env.FAIRY_DIR || path.resolve(root, "..", "markrukthai-1", "node_modules");
@@ -258,17 +264,6 @@ function startOracle() {
   };
 }
 
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 // Both engines are near-deterministic from the start position, so without this
 // an N-game block is not N independent samples — it is a handful of games
 // replayed, diversified only by the opponent's skill noise and timing jitter.
@@ -277,7 +272,7 @@ function mulberry32(seed) {
 // colors reversed, so no opening's inherent bias can favour either side.
 async function randomOpening(oracle, openingIdx) {
   if (OPENING_PLIES <= 0) return [];
-  const rand = mulberry32(SEED * 7919 + openingIdx);
+  const rand = mulberry32(openingSeed(SEED, openingIdx));
   const moves = [];
   for (let i = 0; i < OPENING_PLIES; i++) {
     const legal = await oracle.legalMoves(moves);
@@ -356,6 +351,29 @@ function resolveEval(label, evalVar, weightsVar) {
 
 async function main() {
   const oppIsOurs = FAIRY_BIN && FAIRY_BIN.includes("makruk-engine");
+
+  // Hard precondition, not a habit: the rig proves itself before a single game
+  // is played. Sub-second. See .scratch/makruk-rig/issues/04-*.md.
+  const sides = [
+    { label: "mine", env: { MAKURUK_EVAL: process.env.MAKURUK_EVAL, MAKURUK_WEIGHTS: process.env.MAKURUK_WEIGHTS } },
+  ];
+  if (oppIsOurs) {
+    sides.push({
+      label: "opponent",
+      env: OPP_WEIGHTS ? { MAKURUK_EVAL: "net", MAKURUK_WEIGHTS: OPP_WEIGHTS } : { MAKURUK_EVAL: "classic" },
+    });
+  }
+  await preflightOrDie({ sides, control: CONTROL, seed: SEED });
+
+  // Hash-gated: free unless src/ actually changed since the last passing run.
+  // `--skip-gates` exists for the case where you are deliberately measuring a
+  // known-broken build; it prints loudly because that is not a normal state.
+  if (args.includes("--skip-gates")) {
+    console.warn("WARNING: --skip-gates — engine preconditions were NOT verified for this block.\n");
+  } else {
+    ensureGatesOrDie([{ name: "cargo-test" }], { quiet: false });
+  }
+
   console.log(
     `mine: ${resolveEval("mine", process.env.MAKURUK_EVAL, process.env.MAKURUK_WEIGHTS)}  vs  ` +
       `opponent: ${oppIsOurs ? resolveEval("opponent", OPP_WEIGHTS ? "net" : "classic", OPP_WEIGHTS) : `fairy skill ${FAIRY_SKILL}${FAIRY_EVAL ? " +nnue" : " classical"}`}` +
@@ -425,8 +443,48 @@ async function main() {
     `\nscore: mine ${score.mineWins} – fairy ${score.fairyWins} – draws ${score.draws} – max-plies ${score.maxPly} – errors ${score.errors}`
   );
   console.log(`score fraction: ${pct}%  (${points}/${played}; max-plies counted as draws)`);
+
+  // ---- always-on assertions on impossible states (rig ticket 04, mechanism 2) ----
+  // These cost nothing and fire on the tally, where a corrupt block is still
+  // distinguishable from a real negative result.
   mine.kill();
   fairy.kill();
+  const bad = [];
+  // Every requested game must be accounted for as played or errored. `played`
+  // alone is the wrong invariant: errors legitimately produce no game.
+  // Short and over are different bugs with different fixes, so say which — the
+  // log line has to be diagnosable without re-deriving it from the raw output.
+  const accounted = played + score.errors;
+  if (accounted < GAMES) {
+    bad.push(
+      `accounting SHORT: ${accounted} of ${GAMES} requested games reached the tally (${played} played + ${score.errors} errors). ` +
+        `${GAMES - accounted} vanished — a result tag fell through the classifier, or the game loop exited early. ` +
+        `The score fraction is over a smaller denominator than you asked for.`
+    );
+  } else if (accounted > GAMES) {
+    bad.push(
+      `accounting OVER: ${accounted} results for ${GAMES} requested games (${played} played + ${score.errors} errors). ` +
+        `A game was tallied twice — the score fraction is diluted by a duplicate.`
+    );
+  }
+  if (played > 0 && (points / played < 0 || points / played > 1)) {
+    bad.push(`score fraction ${pct}% is outside [0,100] — the scoring policy is broken.`);
+  }
+  if (played === 0) bad.push(`no game produced a position (${score.errors} errors) — there is nothing to score.`);
+  if (bad.length) {
+    console.error(`\nFATAL [assert] ${bad.join("\n         ")}`);
+    console.error("This block's number is not trustworthy. Do not record it.");
+    process.exit(3);
+  }
+  // Warn, never fatal: zero draws in a long block is suspicious in a variant
+  // whose counting rule produces them constantly, but it is not impossible — and
+  // a fatal that cries wolf once is a fatal you learn to ignore.
+  if (played >= 32 && score.draws + score.maxPly === 0) {
+    console.warn(
+      `\nWARNING: ${played} games, zero draws and zero max-plies. Makruk's counting rule normally produces some.\n` +
+        `  Plausible at a rung where one side is simply outclassed (skill 10/20 both read 0–32–0), suspicious anywhere else.`
+    );
+  }
   process.exit(0);
 }
 

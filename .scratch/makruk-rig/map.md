@@ -26,7 +26,7 @@ Explicitly **not** a strength goal. No DAgger rounds, no net changes, no ladder 
 
 <!-- one line per closed ticket: name (link) + one-line gist -->
 
-- *(none yet — charted this session)*
+- [How does the rig prove a number before anyone acts on it?](issues/04-how-the-rig-proves-a-number.md) — all four mechanisms kept, at four frequencies, and only the expensive one is conditional. **Shipped:** `scripts/preflight.mjs` as a hard precondition inside match-arena and datagen (sub-second, 5 checks); always-on fatal assertions at the tally; `scripts/gate.mjs` hash-gating `cargo-test` / `mirror-perft` / `label-check`, with label-check now running automatically when a corpus is born. Required an engine change — UCI `evalinfo` + `nnue::eval_id()`, because a net→classic fallback was previously invisible to any harness. **Deferred:** the conditional control-block trigger, split to [Implement the conditional control-block trigger](issues/07-control-block-trigger.md).
 
 ## Not yet specified
 
@@ -35,6 +35,7 @@ Explicitly **not** a strength goal. No DAgger rounds, no net changes, no ladder 
 - **Browser-side measurement.** Spec §7's `nps ≥ 500k` in-browser gate has never been run, and there is no wasm measurement harness at all. Whether that belongs in this rig or in the parked strength map is undecided.
 - **The ~25% max-plies rate among our own engines.** It makes Gate A blocks both noisier and slower (400 plies of nothing). Might be a scoring-policy question for the rig, might be an engine question that belongs in the parked map. Sharpen after *Replace fixed-size blocks with a sequential test*.
 - **Fixed-position regression suites.** Whether some arena games can be replaced outright by a frozen set of positions with known-correct handling (much cheaper, much less noisy). Unclear how much of a gate this could carry.
+- **Whether the preflight/gate discipline extends to the training side.** `training/` is python and currently has no equivalent — no assertion that the checkpoint being exported is the one that was trained, no hash-gate on an export. The arena and datagen halves are now covered; training is not. Sharpen once a round actually runs through the new rig.
 
 ## Out of scope
 

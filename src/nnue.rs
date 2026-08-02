@@ -225,6 +225,9 @@ fn channels(game: &Game) -> [f32; N_CHANNELS] {
 // ---------- global wiring ----------
 static NET: RwLock<Option<TinyNnue>> = RwLock::new(None);
 static MODE: AtomicU8 = AtomicU8::new(0); // 0=unknown, 1=classic, 2=net
+/// What `mode()` actually armed, as opposed to what was asked for. Empty until
+/// resolution. Reported by `eval_id()` — see the note there.
+static ARMED: RwLock<String> = RwLock::new(String::new());
 
 const MODE_CLASSIC: u8 = 1;
 const MODE_NET: u8 = 2;
@@ -242,14 +245,33 @@ fn mode() -> u8 {
         match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| TinyNnue::from_bytes(&b)) {
             Ok(net) => {
                 *NET.write().unwrap() = Some(net);
+                *ARMED.write().unwrap() = format!("net {path}");
             }
             Err(e) => {
                 eprintln!("[nnue] failed to load {path}: {e} — falling back to classic eval");
                 MODE.store(MODE_CLASSIC, Ordering::Relaxed);
+                *ARMED.write().unwrap() = format!("classic fallback-from={path} reason={e}");
             }
         }
+    } else {
+        *ARMED.write().unwrap() = "classic".to_string();
     }
     MODE.load(Ordering::Relaxed)
+}
+
+/// Force eval-mode resolution and report what was **actually armed**, not what
+/// was requested.
+///
+/// `mode()` resolves lazily on the first eval and, when the weights fail to
+/// load, falls back to the classical eval with only an stderr line. A harness
+/// driving this binary over UCI cannot see that, so a block can silently measure
+/// the classical eval while believing it measured a net — which is exactly what
+/// happened on 2026-08-02 (three "net" blocks, one classical engine, a day lost).
+/// The preflight self-test asserts this string against what it requested.
+pub fn eval_id() -> String {
+    mode();
+    let armed = ARMED.read().unwrap().clone();
+    if armed.is_empty() { "classic".to_string() } else { armed }
 }
 
 /// Feed weights from the host (wasm worker). Activates net mode on success.

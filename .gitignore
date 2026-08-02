@@ -11,3 +11,4 @@ __pycache__/
 /out/v1/*
 !/out/v1/*.bin
 !/out/v1/*.json
+.gatecache.json

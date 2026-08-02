@@ -26,6 +26,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import readline from "node:readline";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { preflightOrDie } from "./preflight.mjs";
+import { ensureGatesOrDie } from "./gate.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -369,6 +371,17 @@ async function playGame(fairy, oracle, gameId) {
 async function main() {
   mkdirSync(path.dirname(OUT), { recursive: true });
 
+  // Same hard precondition as the arena: in --selfplay the student is armed from
+  // MAKURUK_EVAL/MAKURUK_WEIGHTS, so the identical env-drift bug that silently
+  // demoted three "net" arena blocks to classic would silently generate a
+  // round's DAgger corpus off the wrong student. Sub-second; nothing generates
+  // until it passes. (Sides-differ does not apply — there is only one engine.)
+  await preflightOrDie({
+    sides: [{ label: "student", env: { MAKURUK_EVAL: process.env.MAKURUK_EVAL, MAKURUK_WEIGHTS: process.env.MAKURUK_WEIGHTS } }],
+    control: true,
+    seed: 7,
+  });
+
   const workers = [];
   for (let i = 0; i < JOBS; i++) {
     workers.push({
@@ -435,6 +448,15 @@ async function main() {
     w.oracle.kill();
     w.student?.kill();
   });
+
+  // Validate the corpus at birth, not on the eve of a training run. The label
+  // sign inversion sat undetected across rounds 1–3 because label-check was a
+  // line of prose in AGENTS.md that someone had to remember. Here it is a gate:
+  // a corpus that cannot clear it never becomes a training run.
+  if (total > 0) {
+    console.log("");
+    ensureGatesOrDie([{ name: "label-check", arg: OUT }]);
+  }
   process.exit(0);
 }
 
