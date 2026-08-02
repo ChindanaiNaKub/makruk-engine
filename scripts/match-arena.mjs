@@ -39,6 +39,10 @@ const FAIRY_DIR =
   process.env.FAIRY_DIR || path.resolve(root, "..", "markrukthai-1", "node_modules");
 const FAIRY_BIN = process.env.FAIRY_BIN || null;
 const FAIRY_EVAL = process.env.FAIRY_EVAL || null;
+// Net weights for the OPPONENT side (only meaningful with FAIRY_BIN = our own
+// binary). Enables net-vs-net Gate A blocks; unset means the opponent plays our
+// classical eval, as before.
+const OPP_WEIGHTS = process.env.OPP_WEIGHTS || null;
 const START = "rnsmksnr/8/pppppppp/8/8/PPPPPPPP/8/RNSKMSNR w";
 
 // ---- fetch bridge for emscripten under Node 24 ----
@@ -146,11 +150,18 @@ const toFairyFen = (fen) => fen.replaceAll("F", "M").replaceAll("f", "m");
 
 // ---------- native fairy binary (FAIRY_BIN; ~2.4x faster than wasm) ----------
 async function startFairyProcessEngine(bin) {
-  // Sanitize MAKURUK_* out of the fairy side's env: lets FAIRY_BIN point at our
-  // own binary for net-vs-classic sanity matches (fairy side stays classic).
+  // Sanitize MAKURUK_* out of the opponent's env so FAIRY_BIN can point at our
+  // own binary without both sides inheriting the same eval. Default opponent is
+  // our classical eval; OPP_WEIGHTS arms it with a net instead, which is what
+  // spec §5.1 Gate A needs — a candidate net played head-to-head against the
+  // incumbent net, not against a third party.
   const env = { ...process.env };
   delete env.MAKURUK_EVAL;
   delete env.MAKURUK_WEIGHTS;
+  if (OPP_WEIGHTS) {
+    env.MAKURUK_EVAL = "net";
+    env.MAKURUK_WEIGHTS = OPP_WEIGHTS;
+  }
   const eng = startProcessEngine(bin, [], env);
   eng.send("uci");
   await eng.waitFor((l) => l.includes("uciok"), "fairy uciok");
@@ -271,7 +282,7 @@ async function main() {
   const mine = startProcessEngine(path.join(root, "target", "release", "makruk-engine"));
   const fairy = FAIRY_BIN ? await startFairyProcessEngine(FAIRY_BIN) : await startFairyEngine();
 
-  const score = { mineWins: 0, fairyWins: 0, draws: 0, errors: 0 };
+  const score = { mineWins: 0, fairyWins: 0, draws: 0, maxPly: 0, errors: 0 };
   const results = [];
 
   for (let g = 0; g < GAMES; g++) {
@@ -287,6 +298,13 @@ async function main() {
       tag = mineColor === "black" ? "MINE" : "FAIRY";
     } else if (result.startsWith("stalemate") || result.startsWith("draw")) {
       tag = "DRAW";
+    } else if (result.startsWith("max-plies")) {
+      // Neither side converted in 400 plies. That is a drawn game, not a failed
+      // one — lumping it with illegal moves and discarding it silently dropped
+      // 25% of a 64-game Gate A block and biased the score toward whichever
+      // side more often reached won-but-unconverted positions. Counted as a
+      // draw, reported separately because a high count is itself a finding.
+      tag = "MAXPLY";
     } else {
       tag = "ERR";
     }
@@ -294,6 +312,7 @@ async function main() {
     if (tag === "MINE") score.mineWins++;
     else if (tag === "FAIRY") score.fairyWins++;
     else if (tag === "DRAW") score.draws++;
+    else if (tag === "MAXPLY") score.maxPly++;
     else score.errors++;
 
     const tail = moves.slice(-6).join(" ");
@@ -306,9 +325,16 @@ async function main() {
     results.push({ tag, result, plies });
   }
 
+  // The headline number is the score fraction the spec's gates are stated in
+  // (win 1, any draw 0.5), over every game that produced a position — errors
+  // are the only games excluded, because they produced no game at all.
+  const played = score.mineWins + score.fairyWins + score.draws + score.maxPly;
+  const points = score.mineWins + 0.5 * (score.draws + score.maxPly);
+  const pct = played ? ((points / played) * 100).toFixed(1) : "—";
   console.log(
-    `\nscore: mine ${score.mineWins} – fairy ${score.fairyWins} – draws ${score.draws} – errors ${score.errors}`
+    `\nscore: mine ${score.mineWins} – fairy ${score.fairyWins} – draws ${score.draws} – max-plies ${score.maxPly} – errors ${score.errors}`
   );
+  console.log(`score fraction: ${pct}%  (${points}/${played}; max-plies counted as draws)`);
   mine.kill();
   fairy.kill();
   process.exit(0);

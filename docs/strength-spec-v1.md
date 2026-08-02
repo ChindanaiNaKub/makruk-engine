@@ -13,7 +13,7 @@ This spec takes the engine from its current state (classical eval, 0–8 vs fair
 
 **Stretch claim:** score vs native Fairy-Stockfish 14 + official `makruk-a8c621e24a8c.nnue` (47.7 MB, +248 Elo over the primary bar) at equal time — reported separately, never conflated with the primary claim.
 
-**Iteration gates (dev tier):** 16-game blocks against skill 10 → 15 → 20 (equal 100 ms/100 ms), one rung at a time; a checkpoint only advances when it wins its current gate. Nothing ships to the claim tier without passing all three rungs. (Moka discipline: gate the artifact, not the checkpoint file.)
+**Iteration gates (dev tier):** ~~16-game blocks against skill 10 → 15 → 20~~ — **amended 2026-08-02 (round 5), see §5.1.** The original rungs started seven levels above where the engine plays, so every round returned 0–16 regardless of merit. Replaced by a two-gate protocol (A/B against the incumbent for selection, a ladder block against fairy for advancement) walking **skill 3 → 5 → 8 → 10 → 15 → 20**. Nothing ships to the claim tier without passing every rung. (Moka discipline: gate the artifact, not the checkpoint file.)
 
 **Budget:** total shipped weights ≤ 1 MB raw (0.5 MB target); browser runtime ≤ current wasm size class; ≥ 500k nps in-browser after NNUE integration (from ~1.1M nps today).
 
@@ -72,9 +72,29 @@ Each round (repeat until claim tier passes):
 1. **Generate 50–100k on-policy positions**: our-net engine plays the NNUE teacher through the oracle (`FAIRY_BIN`/`FAIRY_EVAL` arena harness); teacher intervenes on ~15% of our moves to rescue trajectories (DAgger); every reached position labeled as in §3, plus **Goldilocks sample weighting** (up-weight positions where our move disagrees with teacher by a middle amount; research/01 §3).
 2. **Train a 1-epoch continuation** (lr 5e-6…3e-5) with 20k bootstrap replay rows and a 0.25 policy-preservation (value-output) penalty vs the frozen **quantized** incumbent.
 3. **Optional tools:** zero-init counting-side adapter fine-tunes and 2–5 checkpoint soups (+13/+13 wins/200 for Moka) — only arena-gated.
-4. **Gate:** the quantized artifact must win the current dev-tier gate (16 games, current skill rung). Pass → becomes incumbent, advance rung. Fail → round rejected, incumbent kept.
+4. **Gate:** see §5.1.
 
 One round ≈ 1–2 h end-to-end; expect Moka's shape: a handful of accepted rounds, most experiments rejected — that's the process working.
+
+## 5.1 Gating protocol (amended 2026-08-02, round 5)
+
+The original gate — one 16-game block against the current skill rung — failed in two ways at once, and round 5 hit both. It compared candidate and incumbent only *indirectly*, through their separate scores against a third party, which produced an outright transitivity violation (both nets beat our classic eval head-to-head, and classic outscored both against fairy). And it was run at a rung where every artifact scores zero, so it returned no signal at all. Selection fell back to probe top-1, which picked the weaker net.
+
+Two separate questions, two separate gates:
+
+**Gate A — selection (is the candidate better than the incumbent?).** Candidate vs the current incumbent artifact, **64 games, equal 100 ms/100 ms**, via `FAIRY_BIN=<our binary>` (match-arena strips `MAKURUK_*` from the opponent's env, so the two sides can run different evals). Pass = **≥55%**. Head-to-head against the thing you are trying to beat has far lower variance than two independent scores against fairy, and it always has resolution — unlike a ladder block, it cannot bottom out at 0.
+
+**Gate B — advancement (has the incumbent earned the next rung?).** Incumbent vs fairy at the current rung, **32 games, equal 100 ms/100 ms**. Advance at **≥50%**. Rungs: **3 → 5 → 8 → 10 → 15 → 20**.
+
+**A round is accepted only when Gate A passes AND Gate B does not regress** (within one standard error of the incumbent's last block). *Corrected the same day it was written:* the first draft made Gate A the sole decider, and the first data through it showed why that is wrong. r3 beats our classical eval **70.3%** head-to-head over 64 games — about +150 Elo — while r3 and classic score **30.0% and 31.3%** against fairy skill 3, a difference of roughly 10 Elo. A candidate distilled from fairy's own evaluations can exploit the incumbent's specific blind spots without moving at all against the opponent that actually defines the destination. Gate A on its own rewards that. Gate B stays a position report in the sense that failing to clear the *next rung* never rejects a round — but going backwards at the *current* rung does.
+
+**Scoring policy.** Win 1, any draw 0.5, over every game that produced a position. A game that hits the 400-ply cap without a result is a **draw**, not an error: it is a game both engines failed to convert, and that is information. The harness originally lumped max-plies games in with illegal moves and engine faults and dropped them from the tally, which discarded **16 of 64 games** in each Gate A block and biased the score toward whichever side more often reached won-but-unconverted positions (`scripts/match-arena.mjs`, fixed round 5; it now reports max-plies separately and prints the score fraction directly). Only genuine errors — illegal move, no move, oracle fault — are excluded, because they produced no game.
+
+**Max-plies rate is itself a metric.** Our engines abort 25% of games against each other and ~3% against fairy. Fairy converts; we do not. Watch this number per block — a candidate that improves the score fraction while raising the abort rate has probably learned to avoid losing rather than to win.
+
+**Block sizes are honest about resolution.** At n=32 the standard error on the score fraction is ~8.8 points, so a 16-game block cannot separate artifacts a rung apart — that is exactly what produced round 5's contradictions. 64 games for the decision that matters, 32 for the report.
+
+**`scripts/strength-probe.mjs` is not a gate.** Round 5's best-ever probe score (40.0%) belonged to the weaker artifact. Keep it as a fast eval-fit diagnostic, and read the shuffle line beneath the top-1 number — it caught the regression that top-1 hid.
 
 ## 6. Endgame probe set (ticket 08)
 
@@ -94,9 +114,11 @@ Ship per release: `pkg/web/makruk_engine.js`, `pkg/web/makruk_engine_bg.wasm`, `
 
 | Rung (site name) | Produced by | Anchored to |
 |---|---|---|
-| Casual | current classical eval, no net | today's bot (skill ≤5-ish play) |
-| Club | net + node cap ~50k | first checkpoint sweeping the **skill-10** dev gate |
-| Expert | net, full search | the claim-tier artifact (beats skill 20) |
+| Casual | current classical eval, node-capped | measured: crosses over at **fairy skill ~2.5**, sweeps skill 0 14–0–2 *(round 5)* |
+| Club | net + node cap, cap set by measurement | the incumbent once it clears the **skill-8** Gate B block |
+| Expert | net, full search | the claim-tier artifact (≥50% vs skill 20) |
+
+Anchors amended round 5: the original table pinned Club to "the first checkpoint sweeping the skill-10 dev gate" and guessed Casual at "skill ≤5-ish". Both are now measured, and no artifact has yet reached skill 3 — the two upper rungs are promissory until Gate B says otherwise, and must not be named on the site before then.
 
 UCI wire protocol unchanged; the weights path is worker config — no `browserEngineBotWorker.ts` changes.
 
@@ -108,7 +130,7 @@ UCI wire protocol unchanged; the weights path is worker config — no `browserEn
 | M1 | Bootstrap corpus ~10M + split + stats (draw share, counting-draw share, eval distribution sanity) | corpus stats reviewed |
 | M2 | v1 net trained + QAT int8 export | probe-set report + quantized-vs-float move-match ≥75% |
 | M3 | Engine integration + wasm build | mirror-perft + `cargo test` green; nps ≥500k; `MAKURUK_EVAL=classic` unaffected |
-| M4 | Dev gates skill 10 → 15 → 20 via DAgger rounds | each 16-game block won by the artifact |
+| M4 | Dev ladder skill 3 → 5 → 8 → 10 → 15 → 20 via DAgger rounds *(amended round 5)* | per §5.1: Gate A (64-game A/B vs incumbent, ≥55%) accepts a round; Gate B (32-game block vs the rung, ≥50%) advances the rung |
 | M5 | Claim tier | 2×100-game blocks ≥50% vs wasm skill 20 @100 ms + 100-game @500 ms confirm |
 | M6 | Stretch measure + handoff | record score vs NNUE-native bar; ship §8 artifacts |
 
@@ -164,6 +186,14 @@ We cross over at **skill ~2.5 of 20**. This is not an artifact of the native bin
 **Consequences for the plan.** §9's milestone ladder (M4 skill 10 → M5 skill 20) skips the range the engine occupies, and §5's DAgger protocol is gated on M4 blocks that cannot resolve. Both need re-scoping before round 6 — the gate should walk skill 3 → 5 → 8 → 10 with the pass condition at each rung, so a round that gains 100 Elo shows it instead of reading 0–16. That is a spec change, not an implementation detail; **it needs sign-off before more rounds are spent.**
 
 Incumbent unchanged: `out/r3fixed/lam0.97/makruk-tiny-v1-4452f72612f1.bin`. The d6 corpus and artifacts are kept (gitignored) — the labels are good and the fault is in selection, so they are worth retraining against once the gate can resolve.
+
+**Round 5 addendum — the re-scoped gates, run.** §5.1's protocol was applied to all three artifacts the day it was written.
+
+Gate B, 32 games vs fairy skill 3, equal 100/100: classic **31.3%**, r3 **30.0%**, d6 **21.9%**. (The earlier 16-game block had read classic at 40.6% — the wider block corrects it down by 9 points, which is the resolution problem §5.1 exists to fix, appearing immediately.)
+
+Gate A, 64 games head-to-head: r3 vs classic **70.3% — PASS**; d6 vs r3 **45.3% — FAIL**. **d6 is rejected and r3 remains incumbent**, now on a head-to-head result rather than a probe number. Running Gate A at all required extending the harness: `match-arena.mjs` unconditionally stripped `MAKURUK_*` from the opponent, so the opponent could only ever play the classical eval and net-vs-net was impossible — §5.1 was unrunnable as first written. `OPP_WEIGHTS` fixes it, validated by an r3-vs-r3 control that came back 1–1–8 (a silently ignored variable would have shown r3 beating classic instead).
+
+**The finding that outranks the selection result: r3 is +150 Elo on classic head-to-head and ~10 Elo on classic against fairy.** Both scoring policies give the same answer, so this is not the max-plies artifact. The natural reading is that a net distilled from fairy's evaluations learns to exploit *our* classical eval specifically, and has no such edge against the engine its labels came from. If that holds, it caps what distillation-plus-self-comparison can deliver, and the next round should test it directly — take the incumbent, produce a candidate, and check whether Gate A gains ever convert into Gate B gains. Two rounds of that either establishes a conversion ratio or shows there is none, which is the question the whole program now turns on.
 
 **M4 round 4 — 2026-08-02: null-move + LMR landed. 113× fewer nodes at depth 10, 6–0 against the previous build — and the M4 gate moves by one draw. The round-4 "the deficit is search" diagnosis is REFUTED by its own prediction, and the measurement it rested on was an artifact.**
 
