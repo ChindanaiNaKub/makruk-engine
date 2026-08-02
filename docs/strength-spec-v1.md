@@ -123,6 +123,48 @@ UCI wire protocol unchanged; the weights path is worker config — no `browserEn
 
 ## Execution log
 
+**M4 round 5 — 2026-08-02: deeper labels worked exactly as the ceiling predicted and produced a WEAKER engine. The probe metric that has steered rounds 3–5 does not predict play, and the ladder was calibrated against the wrong opponent — at equal time we sit at fairy skill ~2.5, not "even at 5".**
+
+`scripts/datagen.mjs --label search` labels each row with the score of the `go depth DEPTH` search that already runs to pick the teacher's move — depth-N labels for ~1.5× the datagen time (1,902 pos/s at depth 6 vs 2,900 at depth 3), because the search was being computed and discarded. `tools/data/bootstrap-d6.jsonl`: 10,002,800 rows, 50,029 games, 90 min. `scripts/label-check.mjs` (new) reads r = 0.882 against our classic eval, correct sign, with 2.2% of rows at |cp| > 2000 against the static labels' 0% — the search finding forced wins a material eval cannot see.
+
+Three-arm sweep, 6 epochs. `evalR2` was still climbing at epoch 6, unlike round 3's exhausted depth-0 labels:
+
+| lam | evalR2 | wdlAcc | cntAcc | probe top-1 |
+|---|---|---|---|---|
+| 0.85 | 0.863 | 0.727 | 0.875 | **40.0%** |
+| 0.97 | 0.886 | 0.699 | 0.848 | 31.9% |
+| 1.0 | 0.887 | 0.641 | 0.784 | 38.1% |
+
+**The probe moved exactly where the ceiling said it would** — 36.6% (r3, depth-0 labels) → **40.0%**, past the 36.9% depth-0 ceiling and a third of the way to the 45.9% depth-6 one. The prediction was correct.
+
+**And the artifact is not stronger.** M4 gate: **0–16** vs fairy skill 10, worse than r3's 0–15–1 and classic's 0–14–2. At skill 2 — the only rung with resolution — it is indistinguishable from the classical eval it is supposed to replace:
+
+| artifact | probe top-1 | vs fairy skill 2 (16 games, equal 100/100) | vs our classic (discriminator) | repeated plies |
+|---|---|---|---|---|
+| classic | 34.7% | 7–2–6 (66.7%) | — | 18.8% |
+| **r3 net (depth-0 labels)** | 38.1% | **11–1–3 (83.3%)** | 6–0–6 | **4.4%** |
+| d6 net (lam 0.85) | **40.0%** | 9–4–2 (66.7%) | 5–0–9 | 20.2% |
+
+Both nets beat our own classic eval head-to-head, and classic outdraws both against fairy — a transitivity violation that says these 16-game blocks are near their resolution limit. 83.3% vs 66.7% is about 1 se apart, so "r3 is best" is not established. What *is* established is the negative: **+5.3 probe points over classic buys nothing in play.**
+
+**The probe is measuring the wrong thing, and its own output said so.** Top-1 agreement with fairy depth-12 on a fixed position set rewards matching the teacher on positions it ranks, and is blind to what happens in the rest. The shuffle diagnostic printed right underneath it — 20.2% repeated plies and 1/8 games reaching a result, against r3's 4.4% and 3/8 — flagged the regression in the same 58-second run, and selection went on top-1 anyway. **Select on a skill-2/3 arena block (~4 min for 16 games), not on probe top-1.** Keep the probe as a cheap eval-fit diagnostic; it is not a strength proxy.
+
+**Ladder recalibration — the reference point in AGENTS.md was wrong.** "Sweeps skill ≤0, ~even at 5, shut out at 10" was measured against the *wasm* fairy with a 4× movetime handicap and predates `tools/fairy/`. Measured at equal 100/100 against the native binary with classical eval:
+
+| fairy skill | 16 games |
+|---|---|
+| 0 | 14–0–2 |
+| 2 | 7–2–6 |
+| **3** | **4–7–5** |
+| 5 | 0–14–0 |
+| 10 | 0–14–2 |
+
+We cross over at **skill ~2.5 of 20**. This is not an artifact of the native binary: wasm fairy at skill 10 equal-time is also 0–14–2. The destination is skill 20. M4 gates at skill 10, which is ~7 rungs above where the engine actually plays — every round since v1 has been gating against an opponent far outside the range where our changes can register, which is why four consecutive rounds of real improvement all read 0–16.
+
+**Consequences for the plan.** §9's milestone ladder (M4 skill 10 → M5 skill 20) skips the range the engine occupies, and §5's DAgger protocol is gated on M4 blocks that cannot resolve. Both need re-scoping before round 6 — the gate should walk skill 3 → 5 → 8 → 10 with the pass condition at each rung, so a round that gains 100 Elo shows it instead of reading 0–16. That is a spec change, not an implementation detail; **it needs sign-off before more rounds are spent.**
+
+Incumbent unchanged: `out/r3fixed/lam0.97/makruk-tiny-v1-4452f72612f1.bin`. The d6 corpus and artifacts are kept (gitignored) — the labels are good and the fault is in selection, so they are worth retraining against once the gate can resolve.
+
 **M4 round 4 — 2026-08-02: null-move + LMR landed. 113× fewer nodes at depth 10, 6–0 against the previous build — and the M4 gate moves by one draw. The round-4 "the deficit is search" diagnosis is REFUTED by its own prediction, and the measurement it rested on was an artifact.**
 
 `src/search.rs` gained null-move pruning (`R = 2 + depth/6`, skipped in check, at mate-scored beta, while a count is active, and in king+bia material — bia move one square forward, so zugzwang is real) and late move reductions (`R = 1 + [i≥6] + depth/8` on quiet non-checking moves from index 3, full-depth re-search on fail-high). `Game::do_null_move` deliberately leaves `counting` and `outcome` alone: a null move is not a move and must not tick the counting clock.
