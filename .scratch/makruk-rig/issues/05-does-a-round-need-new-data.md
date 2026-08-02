@@ -1,8 +1,8 @@
 # Does a round need new data at all?
 
 Type: grilling
-Status: open
-Blocked by: 01-pin-the-budgets.md
+Status: open — **unblocked 2026-08-02**
+Blocked by:
 Parent: map.md
 
 ## Question
@@ -15,6 +15,23 @@ Two decisions:
 - **What does datagen cost under the ceiling?** Job count, `nice` level, and whether it self-throttles on temperature, per the budgets in *Pin the budgets*. Measure the throughput/°C curve at 12 / 8 / 6 / 4 jobs first — if 6 jobs is 70% of the throughput at 60% of the heat, the default is simply wrong and this is a one-line fix.
 
 The second half is cheap and should not wait on the first.
+
+---
+
+## Update 2026-08-02 — the second half is answered, and the first half changed shape
+
+[Pin the budgets](01-pin-the-budgets.md) measured the throughput/°C curve and **refuted the
+hypothesis in the second bullet**. The guess was "if 6 jobs is 70% of the throughput at 60% of the
+heat, the default is simply wrong." Measured: 6 jobs is **74% of the throughput for about 5% less
+heat**, which is inside the ±4–5 °C noise floor. Peaks stay 84–99 °C at *every* job count. Job
+count is a bad knob; the default stays at 12 and the laptop is given back with `nice 15` instead.
+Datagen now announces its cost and requires consent over 5 minutes. **Nothing left to decide here.**
+
+The first half is also **no longer a budget question**. Background work has no wall-clock ceiling —
+only announce-and-consent — so "does a round earn a new corpus" is not about minutes. It is about
+**label staleness**: whether `tools/data/bootstrap-d6.jsonl` still teaches the current student
+anything, and what cheap diagnostic answers that without running datagen. That is the whole ticket
+now, and it is the sharper question.
 
 ## Answer
 

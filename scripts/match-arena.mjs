@@ -24,6 +24,7 @@ import { preflightOrDie } from "./preflight.mjs";
 import { ensureGatesOrDie } from "./gate.mjs";
 import { appendBlock } from "./results.mjs";
 import { evaluate as sprtEvaluate, describe as sprtDescribe, DEFAULTS as SPRT_DEFAULTS } from "./sprt.mjs";
+import { BUDGET, announce, enforceForeground, estimateBlockS, ThermalGuard } from "./budget.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -51,10 +52,16 @@ const CONTROL = args.includes("--control");
 // wrong kind through forgetfulness; --kind overrides for smokes and one-offs.
 const KIND_OVERRIDE = arg("kind", null);
 // Each concurrent game costs ~2 busy cores (our engine + the opponent; the oracle
-// is mostly idle). Default leaves headroom rather than saturating — the binding
-// core/thermal budget is rig ticket 01, still open, so this is a safe placeholder
-// and not a decision. Arena load is NOT what heats this machine (datagen is).
-const CONCURRENCY = Number(arg("concurrency", String(Math.max(1, Math.min(6, Math.floor((os.cpus().length - 2) / 2))))));
+// is mostly idle). PINNED by rig ticket 01 — the whole ladder was re-measured at
+// this value, and engines at fixed movetime search fewer nodes when they contend,
+// so a different concurrency is effectively a different opponent. Overriding it
+// is a clause-(b) binding mechanism and owes a control block (rig ticket 07).
+const CONCURRENCY = Number(arg("concurrency", String(BUDGET.arenaConcurrency)));
+// Raise the wall-clock ceiling for a deliberately long one-off (a big control
+// block, a diagnostic sweep). Named so it shows up in the shell history of the
+// run that used it.
+const BUDGET_MIN = arg("budget-min", null);
+const ALLOW_HOT = args.includes("--allow-hot");
 // Diagnostic escape hatch: keep transposition tables across games, the way the
 // pre-2026-08-02 serial harness did. Only for measuring what that carryover was
 // worth — a block run this way depends on slot assignment and is not reproducible.
@@ -411,6 +418,45 @@ async function main() {
     ensureGatesOrDie([{ name: "cargo-test" }], { quiet: false });
   }
 
+  // ---- budget (rig ticket 01) ----
+  // Announced before anything spawns, and refused rather than degraded. Gate A
+  // is the accept/reject and gets the 10-minute verdict budget; a fairy block is
+  // a ladder MEASUREMENT and gets the smaller one. Under SPRT the announced
+  // number is the CAP — the typical block finishes in about a third of it — but
+  // the cap is what you would cancel over, so the cap is what gets shown.
+  const selfplayRate = oppIsOurs;
+  const budgetMinutes = Number(
+    BUDGET_MIN ?? (oppIsOurs ? BUDGET.gateMinutes : BUDGET.measureMinutes)
+  );
+  const worstS = estimateBlockS(GAMES_EFFECTIVE, {
+    selfplay: selfplayRate,
+    concurrency: CONCURRENCY,
+    movetime: MOVETIME,
+    opponentMovetime: FAIRYTIME,
+    maxPlies: MAX_PLIES,
+  });
+  announce({
+    label: `${GAMES_EFFECTIVE} games${SPRT ? " (SPRT cap)" : ""}`,
+    worstS,
+    cores: Math.min(CONCURRENCY, GAMES_EFFECTIVE) * 2,
+    thermal: "foreground — brief but not cool (~97 °C peak), never niced (movetime-bound)",
+    extra: `ceiling ${budgetMinutes} min${BUDGET_MIN ? " (--budget-min)" : ""}`,
+  });
+  enforceForeground({
+    label: `${GAMES_EFFECTIVE} games at concurrency ${CONCURRENCY}`,
+    worstS,
+    budgetMinutes,
+    allowHot: ALLOW_HOT,
+    overBudgetHint: SPRT
+      ? "Lower --max-pairs, or pass --budget-min N if this long a block is the point."
+      : "Lower --games, or pass --budget-min N if this long a block is the point.",
+  });
+  // Records the thermal context of every block so a future session can CHECK
+  // whether temperature correlates with score, rather than trusting the
+  // hot-start threshold on faith. No abort here: a foreground block is minutes
+  // long and killing it mid-way would waste the games without saving the laptop.
+  const thermals = new ThermalGuard();
+
   console.log(
     `mine: ${resolveEval("mine", process.env.MAKURUK_EVAL, process.env.MAKURUK_WEIGHTS)}  vs  ` +
       `opponent: ${oppIsOurs ? resolveEval("opponent", OPP_WEIGHTS ? "net" : "classic", OPP_WEIGHTS) : `fairy skill ${FAIRY_SKILL}${FAIRY_EVAL ? " +nnue" : " classical"}`}` +
@@ -667,6 +713,7 @@ async function main() {
     concurrency: slotCount,
     wallClockS: Math.round(blockSecs),
     gameTimeS: Math.round(gameSecs),
+    ...thermals.stop(),
   });
   if (SPRT && !verdict) {
     console.log(`\nSPRT: exited with ${pairScores.length} pairs and no decision (cap ${SPRT_OPTS.maxPairs}). NOT accepted — the incumbent holds.`);

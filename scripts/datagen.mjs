@@ -28,6 +28,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { preflightOrDie } from "./preflight.mjs";
 import { ensureGatesOrDie } from "./gate.mjs";
+import { BUDGET, announce, confirmBackground, estimateDatagenS, goBackground, ThermalGuard } from "./budget.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -39,7 +40,14 @@ const arg = (name, dflt) => {
 };
 const POSITIONS = Number(arg("positions", "10000"));
 const DEPTH = Number(arg("depth", "3"));
-const JOBS = Number(arg("jobs", "12"));
+// Rig ticket 01 measured the job-count knob and found it a bad one: 12 -> 4 jobs
+// costs 48% of throughput and buys ~9 °C, about two widths of the ±4-5 °C noise
+// floor, while peak stays 84-99 °C at EVERY setting. So the default stays high
+// and the laptop is given back by scheduler priority instead (goBackground).
+const JOBS = Number(arg("jobs", String(BUDGET.backgroundJobs)));
+// Consent, not just an announcement — this is the step that makes the machine
+// unusable, and it is the one the user actually loses hours to.
+const YES = args.includes("--yes");
 const OPENING_PLIES = Number(arg("opening-plies", "8"));
 const OPENING_LEVEL = Number(arg("opening-level", "3"));
 const OUT = arg("out", path.join(root, "tools", "data", `datagen-${Date.now()}.jsonl`));
@@ -382,7 +390,34 @@ async function main() {
     seed: 7,
   });
 
+  // ---- budget (rig ticket 01) ----
+  // Datagen is the background class: the thermal hog and the wall-clock hog, and
+  // the step that makes this laptop unusable. It gets no wall-clock ceiling —
+  // the measurements said no job count makes it cool, so "how long" is not the
+  // controllable variable. What IS controllable is that it never starts without
+  // saying what it costs, and never takes the machine for a long stretch without
+  // being asked.
+  const estS = estimateDatagenS(POSITIONS, JOBS);
+  announce({
+    label: `${POSITIONS.toLocaleString()} positions at ${JOBS} jobs`,
+    worstS: estS,
+    cores: JOBS,
+    thermal: `background — expect 74-84 °C sustained, peaks to ~99 °C at any job count`,
+    extra: `nice ${BUDGET.backgroundNice}, so it yields the moment you touch the machine. Job count is not a thermal knob — see scripts/budget.mjs.`,
+  });
+  await confirmBackground({ label: "datagen", worstS: estS, yes: YES });
+  // Before any worker is spawned — children inherit the priority, not the other
+  // way round.
+  goBackground();
+
   const workers = [];
+  // Steady state is 74-84 °C, so this guard is for a blocked vent or a dead fan,
+  // not for ordinary load. It fires on a 60 s mean, never on a spike.
+  const thermals = new ThermalGuard({
+    abortAtC: BUDGET.runawayC,
+    onAbort: () => workers.forEach((w) => { w.fairy.kill(); w.oracle.kill(); w.student?.kill(); }),
+  });
+
   for (let i = 0; i < JOBS; i++) {
     workers.push({
       fairy: await startFairy(),
@@ -437,10 +472,14 @@ async function main() {
   await Promise.all(workers.map((w, i) => runWorker(w, i)));
 
   const secs = (Date.now() - t0) / 1000;
+  const temp = thermals.stop();
   console.log("\n=== datagen smoke summary ===");
   console.log(`labels: ${LABEL}${LABEL === "search" ? ` (depth ${DEPTH})` : " (depth 0)"}, teacher plays depth ${DEPTH}`);
   console.log(`positions: ${total} in ${games} games (${errors} errored)`);
   console.log(`elapsed: ${secs.toFixed(1)}s → ${(total / secs).toFixed(0)} pos/s aggregate`);
+  if (temp.tempMeanC != null) {
+    console.log(`thermal: ${temp.tempStartC}°C start → ${temp.tempMeanC}°C mean, ${temp.tempPeakC}°C peak (±4-5 °C noise floor)`);
+  }
   console.log(`outcomes: ${JSON.stringify(outcomes)}`);
   console.log(`output: ${OUT}`);
   workers.forEach((w) => {

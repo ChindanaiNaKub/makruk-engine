@@ -39,7 +39,28 @@ export const DEFAULTS = {
   alpha: 0.05,
   beta: 0.05,
   minPairs: 20, // guards against an early fluke and against an unstable early variance estimate
-  maxPairs: 400, // 800 games; the cap is a budget decision, not a statistical one
+  // 192 games, ~12.5 min worst case at the measured 3.9 s/game. The cap IS a
+  // budget decision, and rig ticket 01 made it with the Monte-Carlo in
+  // sprt-cap-sweep.mjs rather than by feel. Three findings, in the order they
+  // changed the answer:
+  //
+  //  * A bigger cap is WORSE, not merely slower. The wrong-call rate RISES with
+  //    the cap — 0.8% here against 3.9% at the old 400 — because a longer walk
+  //    is more chances to cross the wrong bound. Cheap and accurate point the
+  //    same way, so there is no trade to make on that axis.
+  //  * What a cap really buys is SENSITIVITY, and the binding case is not the
+  //    +150 Elo round (decided by 86 games at p90 under any cap ≥ 48) but the
+  //    merely-good one. At 20,000 trials the inconclusive rate for a +100 Elo
+  //    candidate is 43% at cap 48, 19% at cap 64, and 2.3% at cap 96. A cap of
+  //    64 would have quietly thrown away one in five good rounds — the exact
+  //    failure this rig exists to stop, just wearing a budget's clothes.
+  //  * Past 96 the curve flattens: cap 400 costs 4× the wall-clock to rescue the
+  //    0-to-30 Elo band, and no round of this project has ever landed there
+  //    (r3 over classic ~+150, d6 under r3 ~-33).
+  //
+  // Inconclusive means the incumbent holds (see below), so the residual 2.3% is
+  // a lost good round, not a wrong accept. That is the price, and it is named.
+  maxPairs: 96,
 };
 
 export function bounds({ alpha, beta }) {
