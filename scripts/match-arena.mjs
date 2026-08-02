@@ -34,6 +34,10 @@ const FAIRYTIME = arg("fairytime", null) ? Number(arg("fairytime")) : MOVETIME *
 const DEPTH = Number(arg("depth", "0")); // >0: `go depth N` for BOTH engines (eval A/B)
 const goCmd = (ms) => (DEPTH > 0 ? `go depth ${DEPTH}` : `go movetime ${ms}`);
 const MAX_PLIES = 400;
+// Random opening plies, replayed with colors reversed on the paired game.
+// 0 restores the old every-game-from-startpos behaviour.
+const OPENING_PLIES = Number(arg("opening-plies", "4"));
+const SEED = Number(arg("seed", "7"));
 
 const FAIRY_DIR =
   process.env.FAIRY_DIR || path.resolve(root, "..", "markrukthai-1", "node_modules");
@@ -228,14 +232,65 @@ function startOracle() {
       const [fen, outcome, counting] = dline.split(" | ");
       return { fen, outcome, counting: counting?.replace("counting=", "") };
     },
+    legalMoves: (uciMoves) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("oracle divide timeout")), 15000);
+        const lines = [];
+        waiters.push((line) => {
+          lines.push(line);
+          if (line.startsWith("total:")) {
+            clearTimeout(timer);
+            resolve(
+              lines.filter((l) => !l.startsWith("total:") && l.includes(":")).map((l) => l.split(":")[0].trim())
+            );
+            return true;
+          }
+          return false;
+        });
+        const positionCmd =
+          uciMoves.length === 0
+            ? `position fen ${START}`
+            : `position fen ${START} moves ${uciMoves.join(" ")}`;
+        proc.stdin.write(positionCmd + "\n");
+        proc.stdin.write("divide 1\n");
+      }),
     kill: () => proc.kill("SIGKILL"),
   };
 }
 
-async function playGame(mine, fairy, mineColor, gameIdx) {
-  const oracle = startOracle();
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Both engines are near-deterministic from the start position, so without this
+// an N-game block is not N independent samples — it is a handful of games
+// replayed, diversified only by the opponent's skill noise and timing jitter.
+// At skill 20 (the claim tier) that noise is near zero, which would have made
+// M5's 100-game blocks close to meaningless. Each opening is played twice with
+// colors reversed, so no opening's inherent bias can favour either side.
+async function randomOpening(oracle, openingIdx) {
+  if (OPENING_PLIES <= 0) return [];
+  const rand = mulberry32(SEED * 7919 + openingIdx);
   const moves = [];
-  let plies = 0;
+  for (let i = 0; i < OPENING_PLIES; i++) {
+    const legal = await oracle.legalMoves(moves);
+    if (!legal.length) return moves;
+    moves.push(legal[Math.floor(rand() * legal.length)]);
+  }
+  return moves;
+}
+
+async function playGame(mine, fairy, mineColor, gameIdx, opening = []) {
+  const oracle = startOracle();
+  const moves = [...opening];
+  let plies = moves.length;
 
   while (plies < MAX_PLIES) {
     const mineTurn = (plies % 2 === 0) === (mineColor === "white");
@@ -278,17 +333,52 @@ async function playGame(mine, fairy, mineColor, gameIdx) {
   return { result: "max-plies " + st.outcome, plies, moves };
 }
 
+// A mangled MAKURUK_EVAL silently falls back to the classical eval, so a block
+// labelled "net" can measure classic and look like a legitimate result. That
+// happened: `env $var node ...` in a zsh driver script does NOT word-split, so
+// MAKURUK_EVAL was set to the whole string "net MAKURUK_WEIGHTS=/path" and
+// three 32-game blocks measured the same engine. Fail loudly instead, and
+// always print what each side is actually playing.
+function resolveEval(label, evalVar, weightsVar) {
+  if (evalVar !== undefined && evalVar !== "net" && evalVar !== "classic") {
+    console.error(
+      `FATAL: ${label} has MAKURUK_EVAL="${evalVar}" — must be exactly "net" or "classic".\n` +
+        `  Use inline prefix assignments (VAR=x VAR2=y node ...), not \`env $var node ...\`.`
+    );
+    process.exit(2);
+  }
+  if (evalVar === "net" && !weightsVar) {
+    console.error(`FATAL: ${label} requests MAKURUK_EVAL=net with no weights path.`);
+    process.exit(2);
+  }
+  return evalVar === "net" ? `net ${path.basename(weightsVar)}` : "classic";
+}
+
 async function main() {
+  const oppIsOurs = FAIRY_BIN && FAIRY_BIN.includes("makruk-engine");
+  console.log(
+    `mine: ${resolveEval("mine", process.env.MAKURUK_EVAL, process.env.MAKURUK_WEIGHTS)}  vs  ` +
+      `opponent: ${oppIsOurs ? resolveEval("opponent", OPP_WEIGHTS ? "net" : "classic", OPP_WEIGHTS) : `fairy skill ${FAIRY_SKILL}${FAIRY_EVAL ? " +nnue" : " classical"}`}` +
+      `  @ ${MOVETIME}/${FAIRYTIME} ms\n`
+  );
   const mine = startProcessEngine(path.join(root, "target", "release", "makruk-engine"));
   const fairy = FAIRY_BIN ? await startFairyProcessEngine(FAIRY_BIN) : await startFairyEngine();
 
   const score = { mineWins: 0, fairyWins: 0, draws: 0, maxPly: 0, errors: 0 };
   const results = [];
 
+  const openingOracle = startOracle();
+  const openings = [];
+  for (let i = 0; i < Math.ceil(GAMES / 2); i++) openings.push(await randomOpening(openingOracle, i));
+  openingOracle.kill();
+  if (OPENING_PLIES > 0) {
+    console.log(`openings: ${openings.length} × ${OPENING_PLIES} random plies (seed ${SEED}), each played both colors\n`);
+  }
+
   for (let g = 0; g < GAMES; g++) {
     const mineColor = g % 2 === 0 ? "white" : "black";
     const t0 = Date.now();
-    const { result, plies, moves } = await playGame(mine, fairy, mineColor, g);
+    const { result, plies, moves } = await playGame(mine, fairy, mineColor, g, openings[g >> 1]);
     const secs = ((Date.now() - t0) / 1000).toFixed(0);
 
     let tag;
