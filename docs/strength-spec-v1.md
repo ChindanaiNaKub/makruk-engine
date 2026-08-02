@@ -147,6 +147,25 @@ UCI wire protocol unchanged; the weights path is worker config — no `browserEn
 
 ## Execution log
 
+**M4 — 2026-08-02: the classical eval BEATS the net. The NNUE program has no artifact that beats the baseline it set out to replace, and the belief that it did was an artifact of the dead transposition table.**
+
+Two SPRT blocks, both directions, both decisive at α = β = 0.05, H0 = 0 vs H1 = 30 Elo:
+
+| test | n | score | verdict |
+|---|---|---|---|
+| r3 net vs our classic | 78 | 44.2% (−46 Elo) | **REJECT** |
+| our classic vs r3 net | 40 | 62.5% (+89 Elo) | **ACCEPT** |
+
+Control alongside: r3 against itself, **50.4% (+3 Elo) over 120 games** — the harness is unbiased.
+
+The round-5 Gate A that made r3 the incumbent read **70.3% for r3 over classic**. It is retracted. It was measured with transposition tables carried across games, which handicapped classic — searching to depth 8 — far more than the net at depth 5. Fixing one harness defect inverted the program's central claim. The clean ladder agrees: classic 72.7% at fairy skill 3, net 71.9%.
+
+**§0's premise now needs re-examination, not just §5.1's rungs.** The spec's plan is to replace a classical eval with a distilled net; five rounds of DAgger and three corpora later, the classical eval is ~46–89 Elo ahead. Every round selected against a baseline that was being handicapped by the harness. Nothing in §1–§4 is refuted — the net trains, quantizes and runs as specified — but the evidence that the *approach* is ahead of the baseline has evaporated, and it was the only evidence there was.
+
+Note when reading those Elo figures: an SPRT stops when it is ahead, so its point estimate is biased away from the stopping boundary. −46 and +89 describe one comparison. Use a fixed-N block to size the effect; the SPRT is for the decision.
+
+**Also amended: Gate A is now sequential.** The old gate — "≥55% over a fixed 64 games" — has, at the measured per-game sd of 0.42, a **17% false-positive and 50% false-negative rate**; it accepts a coin-flip candidate one time in six. Replaced by a pentanomial SPRT (measured pair sd is 0.66–0.79× trinomial, so pairs alone halve the games needed), verified by Monte-Carlo at 3.6%/3.9% realised error and a 54-game median decision on a clearly-better candidate. **Gate B stays fixed-N** so the ladder stays comparable across rungs.
+
 **Rig work — 2026-08-02: the transposition table was dead for every game after the first in a block, worth 17.6 points at 4.0σ. Every arena number in this document predates the fix and understates the engine. The re-measured ladder puts a real rung at skill 8 and the wall at 10.**
 
 `match-arena.mjs` was parallelised (work-stealing pool, one engine pair per slot, 5.4–5.9× measured) and its acceptance test — reproduce a recorded block at the same seed — **failed** by 1.8 SE. Isolating the two changes showed parallelism was innocent (0.7 SE) and the culprit was the other one: clearing TTs per game. Settled at n=128, seed 7, r3 vs fairy skill 3: **67.6% cleared vs 50.0% carried.**

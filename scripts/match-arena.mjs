@@ -23,6 +23,7 @@ import { mulberry32, openingSeed } from "./lib/rng.mjs";
 import { preflightOrDie } from "./preflight.mjs";
 import { ensureGatesOrDie } from "./gate.mjs";
 import { appendBlock } from "./results.mjs";
+import { evaluate as sprtEvaluate, describe as sprtDescribe, DEFAULTS as SPRT_DEFAULTS } from "./sprt.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -58,6 +59,22 @@ const CONCURRENCY = Number(arg("concurrency", String(Math.max(1, Math.min(6, Mat
 // pre-2026-08-02 serial harness did. Only for measuring what that carryover was
 // worth — a block run this way depends on slot assignment and is not reproducible.
 const KEEP_TT = args.includes("--keep-tt");
+
+// Sequential Gate A. See scripts/sprt.mjs for why, and rig ticket 03 for the
+// decision to leave Gate B on fixed blocks: Gate B is a ladder MEASUREMENT that
+// has to stay comparable across rungs, while Gate A is a pure accept/reject,
+// which is what a sequential test is for.
+const SPRT = args.includes("--sprt");
+const SPRT_OPTS = {
+  elo0: Number(arg("elo0", String(SPRT_DEFAULTS.elo0))),
+  elo1: Number(arg("elo1", String(SPRT_DEFAULTS.elo1))),
+  alpha: Number(arg("alpha", String(SPRT_DEFAULTS.alpha))),
+  beta: Number(arg("beta", String(SPRT_DEFAULTS.beta))),
+  minPairs: Number(arg("min-pairs", String(SPRT_DEFAULTS.minPairs))),
+  maxPairs: Number(arg("max-pairs", String(SPRT_DEFAULTS.maxPairs))),
+};
+// Under SPRT --games is a cap, not a target: the cap is the max-pairs budget.
+const GAMES_EFFECTIVE = SPRT ? SPRT_OPTS.maxPairs * 2 : GAMES;
 
 const FAIRY_DIR =
   process.env.FAIRY_DIR || path.resolve(root, "..", "markrukthai-1", "node_modules");
@@ -407,7 +424,7 @@ async function main() {
   // what makes it survive being played out of order below.
   const openingOracle = startOracle();
   const openings = [];
-  for (let i = 0; i < Math.ceil(GAMES / 2); i++) openings.push(await randomOpening(openingOracle, i));
+  for (let i = 0; i < Math.ceil(GAMES_EFFECTIVE / 2); i++) openings.push(await randomOpening(openingOracle, i));
   openingOracle.kill();
   if (OPENING_PLIES > 0) {
     console.log(`openings: ${openings.length} × ${OPENING_PLIES} random plies (seed ${SEED}), each played both colors`);
@@ -420,7 +437,13 @@ async function main() {
   // already spawns per game), because a UCI engine is a single conversation —
   // two games sharing one process would interleave `go`/`bestmove` and corrupt
   // both. Roughly 2 busy cores per slot.
-  const slotCount = Math.max(1, Math.min(CONCURRENCY, GAMES));
+  if (SPRT) {
+    console.log(
+      `SPRT enabled: H0 = ${SPRT_OPTS.elo0} Elo vs H1 = ${SPRT_OPTS.elo1} Elo, α=${SPRT_OPTS.alpha} β=${SPRT_OPTS.beta}, ` +
+        `${SPRT_OPTS.minPairs}–${SPRT_OPTS.maxPairs} pairs (${SPRT_OPTS.minPairs * 2}–${SPRT_OPTS.maxPairs * 2} games). --games is ignored.`
+    );
+  }
+  const slotCount = Math.max(1, Math.min(CONCURRENCY, GAMES_EFFECTIVE));
   console.log(`concurrency: ${slotCount} game${slotCount === 1 ? "" : "s"} at a time (${slotCount * 2} busy cores of ${os.cpus().length})\n`);
   const slots = [];
   for (let i = 0; i < slotCount; i++) {
@@ -430,16 +453,26 @@ async function main() {
     });
   }
 
-  const results = new Array(GAMES);
+  const results = new Array(GAMES_EFFECTIVE);
   const blockStart = Date.now();
   let nextGame = 0;
   let finished = 0;
+  let issued = 0;
+  // SPRT state. A pair is games 2k and 2k+1 on the same opening with colours
+  // reversed; only COMPLETE pairs are observations. llr() uses just the mean and
+  // variance of the pair scores, so it is order-independent — which matters,
+  // because the pool completes pairs out of order.
+  const pairParts = new Map();
+  const pairScores = [];
+  let verdict = null;
 
   await Promise.all(
     slots.map(async (slot) => {
       for (;;) {
+        if (verdict) return; // a bound was crossed; stop issuing new games
         const g = nextGame++;
-        if (g >= GAMES) return;
+        if (g >= GAMES_EFFECTIVE) return;
+        issued++;
         const mineColor = g % 2 === 0 ? "white" : "black";
         const t0 = Date.now();
 
@@ -478,16 +511,42 @@ async function main() {
 
         results[g] = { tag, result, plies, mineColor, secs, moves };
         finished++;
+        const total = SPRT ? `≤${GAMES_EFFECTIVE}` : String(GAMES_EFFECTIVE);
         console.log(
-          `[${String(finished).padStart(String(GAMES).length)}/${GAMES}] game ${g}: mine=${mineColor} -> ${tag} (${result}, ${plies} plies, ${secs}s) …${moves.slice(-6).join(" ")}`
+          `[${String(finished).padStart(3)}/${total}] game ${g}: mine=${mineColor} -> ${tag} (${result}, ${plies} plies, ${secs}s) …${moves.slice(-6).join(" ")}`
         );
         if (tag === "ERR") console.log(`  moves: ${moves.join(" ")}`);
+
+        if (SPRT && tag !== "ERR") {
+          const k = g >> 1;
+          const pts = tag === "MINE" ? 1 : tag === "FAIRY" ? 0 : 0.5;
+          const parts = pairParts.get(k) ?? [];
+          parts.push(pts);
+          pairParts.set(k, parts);
+          if (parts.length === 2) {
+            pairScores.push((parts[0] + parts[1]) / 2);
+            const v = sprtEvaluate(pairScores, SPRT_OPTS);
+            if (pairScores.length % 10 === 0 && !v.decision) {
+              console.log(`      SPRT: ${pairScores.length} pairs, LLR ${v.llr.toFixed(2)} in [${v.lower.toFixed(2)}, ${v.upper.toFixed(2)}]`);
+            }
+            // Only the FIRST crossing is the verdict. Games already in flight
+            // keep completing and their pairs keep landing; re-announcing on
+            // each would print the same decision several times.
+            if (v.decision && !verdict) {
+              verdict = v;
+              console.log(`\n${sprtDescribe(v)}\n  stopping; games already in flight will finish and are counted.`);
+            }
+          }
+        }
       }
     })
   );
 
   // Tally in GAME order, not completion order, so the record is deterministic.
-  for (const r of results) {
+  // Under SPRT the results array is sized to the cap and only partly filled, so
+  // the holes are dropped here rather than counted as errors.
+  const playedResults = results.filter(Boolean);
+  for (const r of playedResults) {
     if (r.tag === "MINE") score.mineWins++;
     else if (r.tag === "FAIRY") score.fairyWins++;
     else if (r.tag === "DRAW") score.draws++;
@@ -495,7 +554,7 @@ async function main() {
     else score.errors++;
   }
   const blockSecs = (Date.now() - blockStart) / 1000;
-  const gameSecs = results.reduce((a, r) => a + Number(r.secs), 0);
+  const gameSecs = playedResults.reduce((a, r) => a + Number(r.secs), 0);
   const mine = { kill: () => slots.forEach((s) => s.mine.kill()) };
   const fairy = { kill: () => slots.forEach((s) => s.fairy.kill()) };
 
@@ -526,16 +585,18 @@ async function main() {
   // alone is the wrong invariant: errors legitimately produce no game.
   // Short and over are different bugs with different fixes, so say which — the
   // log line has to be diagnosable without re-deriving it from the raw output.
+  // Under SPRT the block stops early by design, so the invariant is against the
+  // games actually ISSUED, not against the cap.
   const accounted = played + score.errors;
-  if (accounted < GAMES) {
+  if (accounted < issued) {
     bad.push(
-      `accounting SHORT: ${accounted} of ${GAMES} requested games reached the tally (${played} played + ${score.errors} errors). ` +
-        `${GAMES - accounted} vanished — a result tag fell through the classifier, or the game loop exited early. ` +
-        `The score fraction is over a smaller denominator than you asked for.`
+      `accounting SHORT: ${accounted} of ${issued} issued games reached the tally (${played} played + ${score.errors} errors). ` +
+        `${issued - accounted} vanished — a result tag fell through the classifier, or the game loop exited early. ` +
+        `The score fraction is over a smaller denominator than you think.`
     );
-  } else if (accounted > GAMES) {
+  } else if (accounted > issued) {
     bad.push(
-      `accounting OVER: ${accounted} results for ${GAMES} requested games (${played} played + ${score.errors} errors). ` +
+      `accounting OVER: ${accounted} results for ${issued} issued games (${played} played + ${score.errors} errors). ` +
         `A game was tallied twice — the score fraction is diluted by a duplicate.`
     );
   }
@@ -586,7 +647,7 @@ async function main() {
           armed: armedOf("opponent"),
         }
       : { engine: "fairy", skill: FAIRY_SKILL, eval: FAIRY_EVAL ? "nnue" : "classical", binary: FAIRY_BIN ? "native" : "wasm" },
-    games: GAMES,
+    games: issued,
     movetime: MOVETIME,
     opponentMovetime: FAIRYTIME,
     openingPlies: OPENING_PLIES,
@@ -597,11 +658,19 @@ async function main() {
     maxPlies: score.maxPly,
     errors: score.errors,
     score: points / played,
-    perGame: results.map((r) => ({ tag: r.tag, plies: r.plies })),
+    perGame: playedResults.map((r) => ({ tag: r.tag, plies: r.plies })),
+    sprt: verdict
+      ? { ...SPRT_OPTS, decision: verdict.decision, llr: Number(verdict.llr.toFixed(4)), pairs: verdict.pairs }
+      : SPRT
+        ? { ...SPRT_OPTS, decision: "no-decision-at-exit", pairs: pairScores.length }
+        : null,
     concurrency: slotCount,
     wallClockS: Math.round(blockSecs),
     gameTimeS: Math.round(gameSecs),
   });
+  if (SPRT && !verdict) {
+    console.log(`\nSPRT: exited with ${pairScores.length} pairs and no decision (cap ${SPRT_OPTS.maxPairs}). NOT accepted — the incumbent holds.`);
+  }
   console.log(`\nrecorded as ${row.id} in results/blocks.jsonl`);
   process.exit(0);
 }
