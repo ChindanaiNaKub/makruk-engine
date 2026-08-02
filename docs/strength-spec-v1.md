@@ -123,6 +123,47 @@ UCI wire protocol unchanged; the weights path is worker config — no `browserEn
 
 ## Execution log
 
+**M4 round 4 — 2026-08-02: null-move + LMR landed. 113× fewer nodes at depth 10, 6–0 against the previous build — and the M4 gate moves by one draw. The round-4 "the deficit is search" diagnosis is REFUTED by its own prediction, and the measurement it rested on was an artifact.**
+
+`src/search.rs` gained null-move pruning (`R = 2 + depth/6`, skipped in check, at mate-scored beta, while a count is active, and in king+bia material — bia move one square forward, so zugzwang is real) and late move reductions (`R = 1 + [i≥6] + depth/8` on quiet non-checking moves from index 3, full-depth re-search on fail-high). `Game::do_null_move` deliberately leaves `counting` and `outcome` alone: a null move is not a move and must not tick the counting clock.
+
+Fixed-depth from startpos, native, single thread:
+
+| depth | before | after | nodes before → after |
+|---|---|---|---|
+| 8 | 2.08 s | **0.09 s** | 1,599,565 → 65,066 |
+| 10 | 41.69 s | **0.37 s** | 28,301,584 → 272,520 |
+| 12 | — | **5.28 s** | — → 3,232,529 |
+
+At `movetime 100` this is **+2 ply for classic (6 → 8)** and +1 for the net (4 → 5); wasm reaches depth 9 in 300 ms. Head-to-head against the pre-change binary, 16 games equal 100/100: **6W–0L–5D**. The lever worked, at roughly the magnitude predicted.
+
+**The M4 arena gate still fails.** 16 games vs native fairy skill 10, equal 100/100:
+
+| our eval | opponent | before | after |
+|---|---|---|---|
+| classic | fairy skill 10, classical eval (primary bar) | 0–15–1 | **0–14–2** |
+| r3 net | fairy skill 10 + official NNUE (stretch bar) | 0–16 | **0–16** |
+
+**Correction: "fairy completes `go depth 12` and `go depth 16` in ~0.04 s" was a measurement artifact, and the "6+ effective plies short" figure built on it is wrong.** Piping `quit` immediately after `go` makes fairy return a `bestmove` without searching and emit no `info` lines at all — the 0.04 s was process startup. Measured properly (wait for `bestmove`, then quit), fairy needs **1.16 s for depth 16**, and at `movetime 100`, skill 10 reaches:
+
+| fairy config | depth | nodes | nps |
+|---|---|---|---|
+| classical eval | 10 | 122k | 1.21M |
+| + official NNUE | 13 | 148k | 1.45M |
+
+Against our post-change 65k nodes at 790k nps, the primary-bar gap is **2 ply and 1.9× nodes** — it was 4 ply before this round, never 6+.
+
+**What this means for the lever ranking.** Round 4's claim was that eval had hit diminishing returns and search was the dominant term. The search work has now been done, it is worth 6–0 against our own previous build, and it converts to **one extra draw** against fairy skill 10. A hypothesis that predicts a large gate movement and delivers none is refuted. Closing the last 2 ply cannot plausibly do what closing the first 2 did not.
+
+The one place the search gain *did* register is the probe, and only for the net — classic 34.4% → 34.7% (noise), **r3 net 36.6% → 38.1%**, which finally clears the 36.9% depth-0 label ceiling because the net was the eval starved of depth. That points the same way the ceiling numbers always did: **deeper labels** (d6 45.9%, d8 58.1%) are the lever, restored to rank 1. Search work below is now genuinely second-order.
+
+Revised ranking for round 5:
+1. **Regenerate the corpus with deeper teacher labels** (d6, then d8) — the ceiling says this is worth 9–21 points of headroom, more than everything measured so far combined.
+2. **Aspiration windows + PVS** — cheap, and the reduced-depth searches above are already null-window, so PVS is a small delta.
+3. Futility/delta pruning in quiescence.
+
+**Also fixed: `scripts/mirror-perft.mjs` was reporting 10 false failures.** Its divide parser matched `^([a-h][1-8][a-h][1-8]): (\d+)$`, which silently drops our `m`-suffixed promotion moves, while the fairy-side parser strips the suffix — so every bia promotion read as "missing in mine" even though the perft totals agreed exactly. Regex now accepts the optional suffix. The gate reads **29 passed, 0 failed** (was 19/10) and is genuine again.
+
 **M3 amendment — 2026-08-02: wasm was shipping scalar. SIMD128 recovers +43.7% nps; the 500k target is partially reinstated.**
 
 M3 recorded the net's 200k wasm nps as intrinsic ("micro-optimization showed the cost is intrinsic … the meaningful gate is the arena block, not node speed") and amended the §7 target from 500k to 200k. That measurement was taken on a build with **WASM SIMD128 off**, which is rustc's default — there was no `.cargo/config.toml` and no `-C target-feature=+simd128`. The accumulator is 2–3 × 256-wide f32 ops per node plus a 266→32→32→3 tail, i.e. precisely the shape 4-wide SIMD accelerates.

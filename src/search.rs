@@ -76,6 +76,16 @@ fn now_ms() -> f64 {
     }
 }
 
+/// True when `color` holds at least one piece that is neither the khun nor an
+/// unpromoted bia — the null-move zugzwang guard. Promoted bia counts: it moves
+/// like a met, so it has somewhere to go that is not straight ahead.
+#[inline]
+fn has_non_bia_material(board: &Board, color: Color) -> bool {
+    board.squares.iter().flatten().any(|p| {
+        p.color == color && !matches!(p.kind, Kind::K | Kind::P)
+    })
+}
+
 impl Searcher {
     pub fn new() -> Searcher {
         Searcher {
@@ -260,6 +270,37 @@ impl Searcher {
         // Small check extension keeps tactical lines honest.
         let ext: i16 = if in_check { 1 } else { 0 };
 
+        // Null-move pruning: hand the opponent a free move and search shallow.
+        // If the position still beats beta after that, it is almost certainly a
+        // cut-node. Skipped when in check, when beta is already a mate score,
+        // while a count is running (a free move would misstate the clock the
+        // eval reads), and in king+bia material where zugzwang is real — bia
+        // move one square forward only, so "pass" is not always a gift.
+        let counting_active = game.counting.map_or(false, |c| c.active);
+        if depth >= 3
+            && !in_check
+            && beta.abs() < MATE - MAX_PLY as i32
+            && !counting_active
+            && has_non_bia_material(&game.board, game.turn)
+        {
+            let r = 2 + depth / 6;
+            let nundo = game.do_null_move();
+            let score = -self.negamax(game, depth - 1 - r, ply + 1, -beta, -beta + 1);
+            game.undo_null_move(nundo);
+            if self.stopped {
+                return alpha;
+            }
+            if score >= beta {
+                // A mate score out of a null search is unproven — the opponent
+                // never got to defend. Return the bound, not the claim.
+                return if score >= MATE - MAX_PLY as i32 {
+                    beta
+                } else {
+                    score
+                };
+            }
+        }
+
         let mut moves = game.legal_moves();
         if moves.is_empty() {
             // Should be unreachable (outcome would not be Ongoing), defensive.
@@ -271,9 +312,34 @@ impl Searcher {
         let mut best_move = moves[0];
         let alpha_orig = alpha;
 
-        for mv in moves {
+        for (i, mv) in moves.into_iter().enumerate() {
             let undo = game.do_move(mv);
-            let score = -self.negamax(game, depth - 1 + ext, ply + 1, -beta, -alpha);
+
+            // Late move reductions: the ordering above puts the plausible moves
+            // first, so a quiet move this far down the list is searched shallow
+            // and only re-searched at full depth if it beats alpha anyway.
+            // Captures, promotions, check evasions and checking moves keep full
+            // depth — those are exactly the moves ordering can misjudge.
+            let reduction = if depth >= 3 && i >= 3 && ext == 0 && undo.captured.is_none()
+                && !undo.promoted
+                && !crate::movegen::is_in_check(&game.board, game.turn)
+            {
+                let r = 1 + (i >= 6) as i16 + depth / 8;
+                r.min(depth - 2)
+            } else {
+                0
+            };
+
+            let mut score = -self.negamax(
+                game,
+                depth - 1 + ext - reduction,
+                ply + 1,
+                if reduction > 0 { -(alpha + 1) } else { -beta },
+                -alpha,
+            );
+            if reduction > 0 && score > alpha && !self.stopped {
+                score = -self.negamax(game, depth - 1 + ext, ply + 1, -beta, -alpha);
+            }
             game.undo_move(undo);
             if self.stopped {
                 return best.max(alpha);

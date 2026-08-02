@@ -44,6 +44,11 @@ pub struct Undo {
     pub(crate) prev_outcome: Outcome,
 }
 
+#[derive(Clone, Copy)]
+pub struct NullUndo {
+    turn: Color,
+}
+
 impl Game {
     pub fn startpos() -> Game {
         Game::from_fen(STARTPOS_FEN).expect("valid startpos")
@@ -149,6 +154,22 @@ impl Game {
         self.turn = piece.color;
         self.counting = undo.prev_counting;
         self.outcome = undo.prev_outcome;
+    }
+
+    /// Hand the turn over without touching the board — the search's null move.
+    /// Deliberately does *not* re-adjudicate or advance `counting`: a null move
+    /// is not a move, so it must not tick the counting clock or award a
+    /// counting draw. The search only plays it from an `Ongoing` position that
+    /// is not in check and has no active count, so leaving `outcome` alone is
+    /// sound (the side handed the turn cannot already be in check).
+    pub fn do_null_move(&mut self) -> NullUndo {
+        let undo = NullUndo { turn: self.turn };
+        self.turn = self.turn.other();
+        undo
+    }
+
+    pub fn undo_null_move(&mut self, undo: NullUndo) {
+        self.turn = undo.turn;
     }
 
     /// Port of the adjudication tail of shared/engine.ts makeMove, in the same

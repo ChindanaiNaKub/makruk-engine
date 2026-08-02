@@ -100,7 +100,10 @@ function startMine() {
       const map = new Map();
       let total = 0;
       for (const l of lines) {
-        const m = l.match(/^([a-h][1-8][a-h][1-8]): (\d+)$/);
+        // Our divide prints promotions with the `m` suffix (`f4e3m`); fairy's
+        // own parse below strips it, so normalize to the bare endpoint here or
+        // every promotion looks like a move we failed to generate.
+        const m = l.match(/^([a-h][1-8][a-h][1-8])m?: (\d+)$/);
         if (m) map.set(m[1], Number(m[2]));
         if (l.startsWith("total: ")) total = Number(l.slice(7));
       }
