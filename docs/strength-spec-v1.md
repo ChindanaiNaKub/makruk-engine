@@ -147,6 +147,27 @@ UCI wire protocol unchanged; the weights path is worker config — no `browserEn
 
 ## Execution log
 
+**Rig work — 2026-08-02: the transposition table was dead for every game after the first in a block, worth 17.6 points at 4.0σ. Every arena number in this document predates the fix and understates the engine. The re-measured ladder puts a real rung at skill 8 and the wall at 10.**
+
+`match-arena.mjs` was parallelised (work-stealing pool, one engine pair per slot, 5.4–5.9× measured) and its acceptance test — reproduce a recorded block at the same seed — **failed** by 1.8 SE. Isolating the two changes showed parallelism was innocent (0.7 SE) and the culprit was the other one: clearing TTs per game. Settled at n=128, seed 7, r3 vs fairy skill 3: **67.6% cleared vs 50.0% carried.**
+
+`src/search.rs:214` replaces on depth alone with no generation counter. The probe validates the key (`search.rs:210`) so entries were never wrong, only **un-evictable** — after one game the table saturates with high-depth entries no shallower store can replace. Sixth harness defect in two days, and the sixth to make the engine look *worse* than it is. The site is unaffected (`browserEngineBotWorker.ts:118` sends `ucinewgame`); **adding TT aging is a live strength lever for real play** and belongs to the redrawn strength map.
+
+Clean ladder, n=64 (SE 6.25), all rows in `results/blocks.jsonl`:
+
+| ours | fairy skill | score | previously recorded |
+|---|---|---|---|
+| classic | 3 | **72.7%** | 37.5% |
+| r3 net | 3 | **71.9%** | 53.1% |
+| r3 net | 5 | **34.4%** | 35.9% |
+| r3 net | 8 | **15.6%** | not measured |
+| r3 net | 10 | **0.0%** (0–64–0) | 0.0% |
+| r3 net | 20 | **0.0%** (0–64–0) | 0.0% |
+
+**§5.1's rung ladder needs amending again.** Skill 3 no longer separates anything — classic 72.7% and the net 71.9% are inside one SE of each other — so it is not a gate, it is a floor both artifacts clear. Skill 8 *is* a rung (15.6%), which retires the round-5 reading that there was nothing between 5 and 10; what survives is that 10 and 20 are indistinguishable from each other and from hopeless. Gate at **5–8**.
+
+**And past comparisons were biased, not merely low.** The classical eval gained more from the fix than the net did (+35 vs +19 points at skill 3) because it searches to depth 8 against the net's depth 5 and leaned on the TT harder. Any earlier classic-vs-net conclusion drawn from separate scores against fairy was measured through that bias.
+
 **Ladder re-measurement — 2026-08-02, post-randomization: the first trustworthy arena numbers. r3 CLEARS Gate B at skill 3 (53.1%). Skill 10 / 15 / 20 are a single wall, and the reason is search depth, not skill noise.**
 
 Five 32-game blocks, randomized openings, equal 100 ms/100 ms vs native fairy classical. These supersede every arena figure recorded earlier in this document.

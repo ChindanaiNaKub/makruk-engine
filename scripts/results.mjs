@@ -131,8 +131,13 @@ export function table(blocks) {
   return out.join("\n");
 }
 
+// Kinds that are real records but not results. Single source of truth for both
+// the CLI view and the generated AGENTS.md block — they diverged once and put
+// seven 2-game smokes into the file that is supposed to be the clean summary.
+const NOISE_KINDS = new Set(["smoke", "diag"]);
+
 function writeAgents() {
-  const blocks = readBlocks();
+  const blocks = readBlocks().filter((b) => !NOISE_KINDS.has(b.kind));
   const body = [
     MARK_BEGIN,
     "",
@@ -171,7 +176,11 @@ if (invokedDirectly) {
     const all = argv.includes("--all");
     let blocks = readBlocks({ includeRetracted: all });
     const kind = arg("kind");
-    if (kind) blocks = blocks.filter((b) => b.kind === kind);
+    // Diagnostics and smokes stay in the ledger but out of the default view:
+    // they are real records of real runs, and they are not results. Ask for them
+    // by kind. Nothing is ever hidden without being counted at the bottom.
+    const hiddenNoise = kind ? 0 : blocks.filter((b) => NOISE_KINDS.has(b.kind)).length;
+    blocks = kind ? blocks.filter((b) => b.kind === kind) : blocks.filter((b) => !NOISE_KINDS.has(b.kind));
     blocks.reverse();
     console.log(table(blocks));
     if (all) {
@@ -180,7 +189,10 @@ if (invokedDirectly) {
       }
     } else {
       const hidden = readBlocks({ includeRetracted: true }).filter((b) => b.retraction).length;
-      if (hidden) console.log(`\n(${hidden} retracted block(s) hidden — --all to see them and why)`);
+      const notes = [];
+      if (hidden) notes.push(`${hidden} retracted — --all to see them and why`);
+      if (hiddenNoise) notes.push(`${hiddenNoise} smoke/diag — --kind smoke or --kind diag`);
+      if (notes.length) console.log(`\n(${notes.join("; ")})`);
     }
   }
 }

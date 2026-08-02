@@ -16,6 +16,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import readline from "node:readline";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mulberry32, openingSeed } from "./lib/rng.mjs";
@@ -48,6 +49,15 @@ const CONTROL = args.includes("--control");
 // Ledger classification. Inferred by default so a block is never filed as the
 // wrong kind through forgetfulness; --kind overrides for smokes and one-offs.
 const KIND_OVERRIDE = arg("kind", null);
+// Each concurrent game costs ~2 busy cores (our engine + the opponent; the oracle
+// is mostly idle). Default leaves headroom rather than saturating — the binding
+// core/thermal budget is rig ticket 01, still open, so this is a safe placeholder
+// and not a decision. Arena load is NOT what heats this machine (datagen is).
+const CONCURRENCY = Number(arg("concurrency", String(Math.max(1, Math.min(6, Math.floor((os.cpus().length - 2) / 2))))));
+// Diagnostic escape hatch: keep transposition tables across games, the way the
+// pre-2026-08-02 serial harness did. Only for measuring what that carryover was
+// worth — a block run this way depends on slot assignment and is not reproducible.
+const KEEP_TT = args.includes("--keep-tt");
 
 const FAIRY_DIR =
   process.env.FAIRY_DIR || path.resolve(root, "..", "markrukthai-1", "node_modules");
@@ -58,6 +68,7 @@ const FAIRY_EVAL = process.env.FAIRY_EVAL || null;
 // classical eval, as before.
 const OPP_WEIGHTS = process.env.OPP_WEIGHTS || null;
 const START = "rnsmksnr/8/pppppppp/8/8/PPPPPPPP/8/RNSKMSNR w";
+const OUR_ENGINE = path.join(root, "target", "release", "makruk-engine");
 
 // ---- fetch bridge for emscripten under Node 24 ----
 const origFetch = globalThis.fetch;
@@ -354,7 +365,12 @@ function resolveEval(label, evalVar, weightsVar) {
 }
 
 async function main() {
-  const oppIsOurs = FAIRY_BIN && FAIRY_BIN.includes("makruk-engine");
+  // Substring-matching "makruk-engine" here was a latent trap: the repository
+  // directory is itself named makruk-engine, so ANY path under it matched and a
+  // block against the real fairy binary was labelled as a head-to-head against
+  // our classical eval. Harmless while it only coloured a console line; actively
+  // corrupting once the ledger started recording it. Compare resolved paths.
+  const oppIsOurs = !!FAIRY_BIN && path.resolve(FAIRY_BIN) === path.resolve(OUR_ENGINE);
 
   // Hard precondition, not a habit: the rig proves itself before a single game
   // is played. Sub-second. See .scratch/makruk-rig/issues/04-*.md.
@@ -383,59 +399,105 @@ async function main() {
       `opponent: ${oppIsOurs ? resolveEval("opponent", OPP_WEIGHTS ? "net" : "classic", OPP_WEIGHTS) : `fairy skill ${FAIRY_SKILL}${FAIRY_EVAL ? " +nnue" : " classical"}`}` +
       `  @ ${MOVETIME}/${FAIRYTIME} ms\n`
   );
-  const mine = startProcessEngine(path.join(root, "target", "release", "makruk-engine"));
-  const fairy = FAIRY_BIN ? await startFairyProcessEngine(FAIRY_BIN) : await startFairyEngine();
-
   const score = { mineWins: 0, fairyWins: 0, draws: 0, maxPly: 0, errors: 0 };
-  const results = [];
 
+  // Openings are drawn up front from the seeded PRNG, indexed by opening number.
+  // Game g always takes openings[g >> 1] and colour g % 2, so the colour-reversed
+  // pairing is a property of the game INDEX, not of execution order — which is
+  // what makes it survive being played out of order below.
   const openingOracle = startOracle();
   const openings = [];
   for (let i = 0; i < Math.ceil(GAMES / 2); i++) openings.push(await randomOpening(openingOracle, i));
   openingOracle.kill();
   if (OPENING_PLIES > 0) {
-    console.log(`openings: ${openings.length} × ${OPENING_PLIES} random plies (seed ${SEED}), each played both colors\n`);
+    console.log(`openings: ${openings.length} × ${OPENING_PLIES} random plies (seed ${SEED}), each played both colors`);
   }
 
-  for (let g = 0; g < GAMES; g++) {
-    const mineColor = g % 2 === 0 ? "white" : "black";
-    const t0 = Date.now();
-    const { result, plies, moves } = await playGame(mine, fairy, mineColor, g, openings[g >> 1]);
-    const secs = ((Date.now() - t0) / 1000).toFixed(0);
+  // ---- worker pool ----
+  // Games were played strictly serially until 2026-08-02: one engine pair for the
+  // whole block, so a 32-game block occupied 2 of 16 cores and took ~8 minutes.
+  // Each concurrent game needs its OWN engine pair (plus the oracle playGame
+  // already spawns per game), because a UCI engine is a single conversation —
+  // two games sharing one process would interleave `go`/`bestmove` and corrupt
+  // both. Roughly 2 busy cores per slot.
+  const slotCount = Math.max(1, Math.min(CONCURRENCY, GAMES));
+  console.log(`concurrency: ${slotCount} game${slotCount === 1 ? "" : "s"} at a time (${slotCount * 2} busy cores of ${os.cpus().length})\n`);
+  const slots = [];
+  for (let i = 0; i < slotCount; i++) {
+    slots.push({
+      mine: startProcessEngine(OUR_ENGINE),
+      fairy: FAIRY_BIN ? await startFairyProcessEngine(FAIRY_BIN) : await startFairyEngine(),
+    });
+  }
 
-    let tag;
-    if (result.startsWith("checkmate winner=white")) {
-      tag = mineColor === "white" ? "MINE" : "FAIRY";
-    } else if (result.startsWith("checkmate winner=black")) {
-      tag = mineColor === "black" ? "MINE" : "FAIRY";
-    } else if (result.startsWith("stalemate") || result.startsWith("draw")) {
-      tag = "DRAW";
-    } else if (result.startsWith("max-plies")) {
-      // Neither side converted in 400 plies. That is a drawn game, not a failed
-      // one — lumping it with illegal moves and discarding it silently dropped
-      // 25% of a 64-game Gate A block and biased the score toward whichever
-      // side more often reached won-but-unconverted positions. Counted as a
-      // draw, reported separately because a high count is itself a finding.
-      tag = "MAXPLY";
-    } else {
-      tag = "ERR";
-    }
+  const results = new Array(GAMES);
+  const blockStart = Date.now();
+  let nextGame = 0;
+  let finished = 0;
 
-    if (tag === "MINE") score.mineWins++;
-    else if (tag === "FAIRY") score.fairyWins++;
-    else if (tag === "DRAW") score.draws++;
-    else if (tag === "MAXPLY") score.maxPly++;
+  await Promise.all(
+    slots.map(async (slot) => {
+      for (;;) {
+        const g = nextGame++;
+        if (g >= GAMES) return;
+        const mineColor = g % 2 === 0 ? "white" : "black";
+        const t0 = Date.now();
+
+        // Clear both transposition tables between games. Serially, one engine
+        // played every game and carried its TT across all of them; with a pool
+        // it would carry across only the games that happened to land in the same
+        // slot, which would make a block's result depend on how work was
+        // distributed. Starting each game clean makes the block independent of
+        // concurrency — the property a reproducible harness needs.
+        if (!KEEP_TT) {
+          slot.mine.send("ucinewgame");
+          slot.fairy.send("ucinewgame");
+        }
+
+        const { result, plies, moves } = await playGame(slot.mine, slot.fairy, mineColor, g, openings[g >> 1]);
+        const secs = ((Date.now() - t0) / 1000).toFixed(0);
+
+        let tag;
+        if (result.startsWith("checkmate winner=white")) {
+          tag = mineColor === "white" ? "MINE" : "FAIRY";
+        } else if (result.startsWith("checkmate winner=black")) {
+          tag = mineColor === "black" ? "MINE" : "FAIRY";
+        } else if (result.startsWith("stalemate") || result.startsWith("draw")) {
+          tag = "DRAW";
+        } else if (result.startsWith("max-plies")) {
+          // Neither side converted in 400 plies. That is a drawn game, not a
+          // failed one — lumping it with illegal moves and discarding it
+          // silently dropped 25% of a 64-game Gate A block and biased the score
+          // toward whichever side more often reached won-but-unconverted
+          // positions. Counted as a draw, reported separately because a high
+          // count is itself a finding.
+          tag = "MAXPLY";
+        } else {
+          tag = "ERR";
+        }
+
+        results[g] = { tag, result, plies, mineColor, secs, moves };
+        finished++;
+        console.log(
+          `[${String(finished).padStart(String(GAMES).length)}/${GAMES}] game ${g}: mine=${mineColor} -> ${tag} (${result}, ${plies} plies, ${secs}s) …${moves.slice(-6).join(" ")}`
+        );
+        if (tag === "ERR") console.log(`  moves: ${moves.join(" ")}`);
+      }
+    })
+  );
+
+  // Tally in GAME order, not completion order, so the record is deterministic.
+  for (const r of results) {
+    if (r.tag === "MINE") score.mineWins++;
+    else if (r.tag === "FAIRY") score.fairyWins++;
+    else if (r.tag === "DRAW") score.draws++;
+    else if (r.tag === "MAXPLY") score.maxPly++;
     else score.errors++;
-
-    const tail = moves.slice(-6).join(" ");
-    console.log(
-      `game ${g}: mine=${mineColor} -> ${tag} (${result}, ${plies} plies, ${secs}s) …${tail}`
-    );
-    if (tag === "ERR") {
-      console.log(`  moves: ${moves.join(" ")}`);
-    }
-    results.push({ tag, result, plies });
   }
+  const blockSecs = (Date.now() - blockStart) / 1000;
+  const gameSecs = results.reduce((a, r) => a + Number(r.secs), 0);
+  const mine = { kill: () => slots.forEach((s) => s.mine.kill()) };
+  const fairy = { kill: () => slots.forEach((s) => s.fairy.kill()) };
 
   // The headline number is the score fraction the spec's gates are stated in
   // (win 1, any draw 0.5), over every game that produced a position — errors
@@ -447,6 +509,12 @@ async function main() {
     `\nscore: mine ${score.mineWins} – fairy ${score.fairyWins} – draws ${score.draws} – max-plies ${score.maxPly} – errors ${score.errors}`
   );
   console.log(`score fraction: ${pct}%  (${points}/${played}; max-plies counted as draws)`);
+  // gameSecs is the wall-clock this block would have cost serially, so the ratio
+  // is the realised speed-up rather than an assumed one.
+  console.log(
+    `wall-clock: ${blockSecs.toFixed(0)}s at concurrency ${slotCount} ` +
+      `(${gameSecs.toFixed(0)}s of game time → ${(gameSecs / blockSecs).toFixed(1)}× vs serial)`
+  );
 
   // ---- always-on assertions on impossible states (rig ticket 04, mechanism 2) ----
   // These cost nothing and fire on the tally, where a corrupt block is still
@@ -494,7 +562,14 @@ async function main() {
   // can transcribe it wrong — and it does not land in a session-scoped /tmp that
   // dies with the shell that started it. See scripts/results.mjs.
   const armedOf = (label) => sides.find((s) => s.label === label)?.armed ?? null;
-  const kind = KIND_OVERRIDE ?? (CONTROL ? "control" : oppIsOurs ? "gate-a" : "gate-b");
+  // A block too small to resolve anything is filed as a smoke regardless of what
+  // it was asked to be — at n<8 the standard error exceeds 17 points, so calling
+  // it a gate would put a number in the ledger that cannot mean what its kind
+  // implies. Smokes are kept, just hidden from the default view.
+  const kind =
+    GAMES < 8 && KIND_OVERRIDE !== "control"
+      ? "smoke"
+      : (KIND_OVERRIDE ?? (CONTROL ? "control" : oppIsOurs ? "gate-a" : "gate-b"));
   const row = appendBlock({
     kind,
     mine: {
@@ -523,6 +598,9 @@ async function main() {
     errors: score.errors,
     score: points / played,
     perGame: results.map((r) => ({ tag: r.tag, plies: r.plies })),
+    concurrency: slotCount,
+    wallClockS: Math.round(blockSecs),
+    gameTimeS: Math.round(gameSecs),
   });
   console.log(`\nrecorded as ${row.id} in results/blocks.jsonl`);
   process.exit(0);
