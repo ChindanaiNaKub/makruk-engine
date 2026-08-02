@@ -1,7 +1,7 @@
 # Does a round need new data at all?
 
 Type: grilling
-Status: open — **unblocked 2026-08-02**
+Status: resolved (2026-08-02)
 Blocked by:
 Parent: map.md
 
@@ -34,5 +34,68 @@ anything, and what cheap diagnostic answers that without running datagen. That i
 now, and it is the sharper question.
 
 ## Answer
+
+**A round never earns a new corpus on freshness grounds, because a corpus cannot go stale.** Each
+generator has a **fixed point**, and regeneration lands back on it. Measured 2026-08-02:
+
+| comparison | TV distance | reading |
+|---|---|---|
+| same student, seeds 7 vs 11, 20 games | **0.036** | the metric's own noise floor |
+| bootstrap-v1 vs v2 vs d6 — three 10M-row corpora, different days | **0.006–0.026** | *below the noise floor* |
+| dagger-r1 vs dagger-r2 — different students, different days | **0.025** | *below the noise floor* |
+| bootstrap-d6 vs where a student actually plays | 0.127 (net) / 0.175 (classic) | a real coverage gap |
+| classic vs r3 net, same seed | 0.140 | student identity does move the states |
+| **bootstrap vs DAgger** | **0.515** | the only thing that ever moved the distribution |
+
+Three 10M-row corpora, built on three different days, are the **same distribution**. Two DAgger
+corpora built from two different students are also the same distribution — a different one. So
+regenerating buys nothing: *a fresh corpus from the same generator is the same corpus.* The only
+lever on coverage is **switching generator**, and choosing to switch is a strength decision, not a
+rig one (see *Out of scope* below).
+
+### The rig policy
+
+1. **Datagen is never automatic and never on the per-round critical path.** The default for every
+   round is *reuse the corpus*. This is the ~60 minutes rounds 3–5 spent for no information.
+2. **The trigger for regenerating is a decision to change the generator — never elapsed rounds and
+   never a drift number.** "Every K rounds" is refuted outright by the table above.
+3. **`scripts/corpus-drift.mjs` is the check**, and it is checkable without running datagen: a
+   20-game arena block (`--dump-games`, ~90 s, foreground class) plus a byte-offset sample of the
+   corpus. It answers *does the corpus cover where this student plays*, and — pointed at two
+   corpora — *did anything actually change*.
+4. **Thresholds are read off the measured scale, not chosen**: < 0.10 is same-generator, ≥ 0.35 is
+   mode-switch scale, and the band between them means find out what changed.
+
+### What the measurement also turned up
+
+**The DAgger corpora contain zero deep endgames.** dagger-r1/r2 are ~47% opening, ~41% middlegame,
+**0.0% bare** and **0.0% bare-pawnless**, against bootstrap's 30.4% bare-pawnless. The two modes are
+near-complementary, not overlapping.
+
+This matters because the round-2 diagnosis in `docs/strength-spec-v1.md` recommended "rebalance the
+corpus toward opening/middlegame positions" as an untried lever. It was already tried: DAgger rounds
+1 and 2 *are* that rebalance, in the most extreme form available, and the record says they "bought
+nothing measurable." Whatever is wrong is not the phase mix alone. That is a finding **for the
+parked strength map**, recorded here because this ticket is where it surfaced.
+
+### Shipped
+
+- `scripts/corpus-drift.mjs` — the coverage diagnostic, with the measured scale in its header so
+  the thresholds are inherited as evidence rather than as numbers.
+- `match-arena.mjs --dump-games <file>` — writes each game's move list. The arena's hot loop is
+  untouched; the analysis replays the moves through the same oracle that adjudicated them, so the
+  positions measured are exactly the ones played.
+
+Verified: noise floor established before any threshold was set (0.036, two seeds); both verdict
+modes exercised; `cargo test --release` 9/9, mirror-perft and preflight green. Three 20-game blocks
+recorded to the ledger (b0032–b0034) as `--kind diag`: classic seed 7, classic seed 11, r3 net seed 7.
+
+### Out of scope — split off, not answered
+
+The ticket's first bullet also asked *what should a corpus contain* — every round, every K rounds,
+composition, label depth. The freshness half is answered above and is a rig question. The
+composition half is **strength work**: which generator, what label depth, what phase mix, whether
+DAgger is the right lever at all. That belongs to the fresh map taken up after this one, and the
+evidence above (the two fixed points, and the zero-endgame DAgger shape) is the handoff.
 
 <!-- filled on resolution -->

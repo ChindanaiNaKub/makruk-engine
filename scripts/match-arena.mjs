@@ -15,6 +15,7 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import readline from "node:readline";
 import os from "node:os";
 import path from "node:path";
@@ -62,6 +63,11 @@ const CONCURRENCY = Number(arg("concurrency", String(BUDGET.arenaConcurrency)));
 // run that used it.
 const BUDGET_MIN = arg("budget-min", null);
 const ALLOW_HOT = args.includes("--allow-hot");
+// Opt-in move dump for corpus-drift.mjs (rig ticket 05). Writing the MOVES and
+// letting the analysis replay them through the oracle keeps the arena's job
+// unchanged — no per-ply bookkeeping in the hot loop, and the positions the
+// analysis sees are the same ones the oracle adjudicated.
+const DUMP_GAMES = arg("dump-games", null);
 // Diagnostic escape hatch: keep transposition tables across games, the way the
 // pre-2026-08-02 serial harness did. Only for measuring what that carryover was
 // worth — a block run this way depends on slot assignment and is not reproducible.
@@ -677,6 +683,17 @@ async function main() {
     GAMES < 8 && KIND_OVERRIDE !== "control"
       ? "smoke"
       : (KIND_OVERRIDE ?? (CONTROL ? "control" : oppIsOurs ? "gate-a" : "gate-b"));
+  if (DUMP_GAMES) {
+    writeFileSync(
+      DUMP_GAMES,
+      results
+        .filter(Boolean)
+        .map((r, i) => JSON.stringify({ game: i, tag: r.tag, result: r.result, plies: r.plies, mineColor: r.mineColor, moves: r.moves }))
+        .join("\n") + "\n"
+    );
+    console.log(`dumped ${results.filter(Boolean).length} games to ${DUMP_GAMES}`);
+  }
+
   const row = appendBlock({
     kind,
     mine: {
