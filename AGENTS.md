@@ -26,7 +26,7 @@ Rust Makruk engine. Sole rule authority: markrukthai `shared/engine.ts` + `share
 
 <!-- BEGIN GENERATED standings — node scripts/results.mjs --write-agents -->
 
-_Generated from `results/blocks.jsonl` (13 live blocks). Do not hand-edit — run `node scripts/results.mjs --write-agents`._
+_Generated from `results/blocks.jsonl` (14 live blocks). Do not hand-edit — run `node scripts/results.mjs --write-agents`._
 
 | id | kind | ours | opponent | n | W–L–D | score |  |
 |---|---|---|---|---|---|---|---|
@@ -43,6 +43,7 @@ _Generated from `results/blocks.jsonl` (13 live blocks). Do not hand-edit — ru
 | b0035 | control | classic | classic | 20 | 0–1–15 (4 mp) | 47.5% |  |
 | b0036 | control | classic | classic | 20 | 1–0–12 (7 mp) | 52.5% |  |
 | b0037 | gate-b | classic | fairy skill 4 +nnue | 16 | 2–4–6 (4 mp) | 43.8% |  |
+| b0038 | gate-a | net e499401b710b | classic | 46 | 2–16–28 | 34.8% |  |
 
 <!-- END GENERATED standings -->
 
