@@ -552,15 +552,16 @@ function audit() {
         note({ id, invariant: "engine-identified", says: `no engineId for ${side}`, contradicts: "this row predates engine identity, so a proof against it cannot check what it ran on", class: "incomplete" });
       }
     }
-    // Both sides of a gate-a run the SAME file — match-arena points FAIRY_BIN at
-    // our own binary — so two different hashes mean the row was assembled from
-    // two different beliefs about what was playing.
-    if (b.mine?.engineId && b.opponent?.engine === "ours" && b.opponent?.engineId && b.mine.engineId !== b.opponent.engineId) {
+    // A CONTROL is self-play by construction, so its 0.5 expectation only holds
+    // when both sides are the same binary. Narrowed from "any opponent of engine
+    // 'ours'" on 2026-08-03: OPP_BIN makes a Gate A between two different builds
+    // legitimate, and that is exactly how an `src/` change gets measured.
+    if (b.kind === "control" && b.mine?.engineId && b.opponent?.engineId && b.mine.engineId !== b.opponent.engineId) {
       add({
         id,
-        invariant: "selfplay-same-binary",
-        says: `mine ${b.mine.engineId}, opponent ${b.opponent.engineId}`,
-        contradicts: "an opponent of engine 'ours' is FAIRY_BIN pointed at our own binary — one file, one hash",
+        invariant: "control-same-binary",
+        says: `control: mine ${b.mine.engineId}, opponent ${b.opponent.engineId}`,
+        contradicts: "a control's 0.5 expectation is only true when both sides are the same binary",
         class: "identity",
       });
     }

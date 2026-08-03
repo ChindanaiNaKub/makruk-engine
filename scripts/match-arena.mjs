@@ -41,7 +41,7 @@ const arg = (name, dflt) => {
 const GAMES = Number(arg("games", "8"));
 const FAIRY_SKILL = Number(arg("skill", "-20"));
 const MOVETIME = Number(arg("movetime", "100"));
-const FAIRYTIME = arg("fairytime", null) ? Number(arg("fairytime")) : MOVETIME * 4;
+const FAIRYTIME_ARG = arg("fairytime", null);
 const DEPTH = Number(arg("depth", "0")); // >0: `go depth N` for BOTH engines (eval A/B)
 const goCmd = (ms) => (DEPTH > 0 ? `go depth ${DEPTH}` : `go movetime ${ms}`);
 const MAX_PLIES = 400;
@@ -100,8 +100,20 @@ const FAIRY_EVAL = process.env.FAIRY_EVAL || null;
 // binary). Enables net-vs-net Gate A blocks; unset means the opponent plays our
 // classical eval, as before.
 const OPP_WEIGHTS = process.env.OPP_WEIGHTS || null;
+const OUR_ENGINE_PATH = path.join(root, "target", "release", "makruk-engine");
+// Known here, not 340 lines later, because FAIRYTIME's default depends on it.
+const OPP_IS_OURS =
+  !!FAIRY_BIN && (path.resolve(FAIRY_BIN) === path.resolve(OUR_ENGINE_PATH) || !!process.env.OPP_BIN);
+// The 4x rule handicaps US against FAIRY and is deliberate for ladder work. It
+// is flatly wrong when the opponent is our own engine: a head-to-head at 100 vs
+// 400 ms measures the clock, not the change. b0051 was run that way and had to
+// be retracted — the candidate lost 26 Elo to a handicap and nothing else, which
+// is the exact defect the ledger map spent itself repairing ("the opponent had
+// 4x the time"). The auto-control spawn already forced equal time; the main path
+// did not, so the rig knew this in one place and not the other.
+const FAIRYTIME = FAIRYTIME_ARG ? Number(FAIRYTIME_ARG) : (OPP_IS_OURS ? MOVETIME : MOVETIME * 4);
 const START = "rnsmksnr/8/pppppppp/8/8/PPPPPPPP/8/RNSKMSNR w";
-const OUR_ENGINE = path.join(root, "target", "release", "makruk-engine");
+const OUR_ENGINE = OUR_ENGINE_PATH; // one definition; OPP_IS_OURS above needs it earlier
 
 // ---- fetch bridge for emscripten under Node 24 ----
 const origFetch = globalThis.fetch;
@@ -433,16 +445,28 @@ async function main() {
   // block against the real fairy binary was labelled as a head-to-head against
   // our classical eval. Harmless while it only coloured a console line; actively
   // corrupting once the ledger started recording it. Compare resolved paths.
-  const oppIsOurs = !!FAIRY_BIN && path.resolve(FAIRY_BIN) === path.resolve(OUR_ENGINE);
+  // OPP_BIN names a DIFFERENT BUILD of our own engine as the opponent. Without
+  // it the rig cannot express a Gate A on an `src/` change at all: FAIRY_BIN
+  // pointing at another build made `oppIsOurs` false, so the row recorded the
+  // opponent as FAIRY — and the block-schema guard then (correctly) refuses the
+  // row for `kind-matches-opponent`. Every Gate A in the ledger's history is
+  // net-vs-classic, i.e. differentiated by EVAL; nothing was ever differentiated
+  // by BUILD. Declared exception to the redraw map's "no rig redesign", on the
+  // same footing as adding `depth` to fingerprint(): a completeness fix to a
+  // mechanism that was blind, and only expressible now because ledger ticket 03
+  // put `engineId` on both sides of every row — so the record can finally say
+  // WHICH build played.
+  const oppIsOurs = OPP_IS_OURS;
 
   // Hard precondition, not a habit: the rig proves itself before a single game
   // is played. Sub-second. See .scratch/makruk-rig/issues/04-*.md.
   const sides = [
-    { label: "mine", env: { MAKURUK_EVAL: process.env.MAKURUK_EVAL, MAKURUK_WEIGHTS: process.env.MAKURUK_WEIGHTS } },
+    { label: "mine", bin: OUR_ENGINE, env: { MAKURUK_EVAL: process.env.MAKURUK_EVAL, MAKURUK_WEIGHTS: process.env.MAKURUK_WEIGHTS } },
   ];
   if (oppIsOurs) {
     sides.push({
       label: "opponent",
+      bin: FAIRY_BIN ?? OUR_ENGINE,
       env: OPP_WEIGHTS ? { MAKURUK_EVAL: "net", MAKURUK_WEIGHTS: OPP_WEIGHTS } : { MAKURUK_EVAL: "classic" },
     });
   }

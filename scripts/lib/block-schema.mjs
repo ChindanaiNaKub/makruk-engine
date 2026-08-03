@@ -96,14 +96,22 @@ const RULES = [
     },
   },
   {
-    // An opponent of engine 'ours' is FAIRY_BIN pointed at our own binary — one
-    // file, one hash. Two hashes mean the row was assembled from two different
-    // beliefs about what was playing, which is the drift this ticket removes.
-    name: "selfplay-same-binary",
+    // NARROWED 2026-08-03 (redraw ticket 05). This began as "an opponent of
+    // engine 'ours' is one file, one hash" — true while the only way to get
+    // opponent=ours was FAIRY_BIN === OUR_ENGINE. OPP_BIN falsified that: a
+    // Gate A on an `src/` change is two DIFFERENT builds, both ours, and that
+    // is the point of it. The guard fired on the first such block, which is the
+    // guard working — the assumption it encoded had genuinely expired.
+    //
+    // What survives is the case that still cannot be anything else: a CONTROL
+    // block is self-play by construction, run to prove the harness is
+    // symmetric, so its 0.5 expectation only holds if both sides are the same
+    // binary. Two hashes there means the control proves nothing.
+    name: "control-same-binary",
     phase: "pre",
     check: (b) =>
-      b.opponent?.engine === "ours" && has(b.mine?.engineId) && has(b.opponent?.engineId) && b.mine.engineId !== b.opponent.engineId
-        ? `mine ${b.mine.engineId} but opponent ${b.opponent.engineId} — self-play runs one binary`
+      b.kind === "control" && has(b.mine?.engineId) && has(b.opponent?.engineId) && b.mine.engineId !== b.opponent.engineId
+        ? `control with mine ${b.mine.engineId} but opponent ${b.opponent.engineId} — a control's 0.5 expectation needs one binary`
         : null,
   },
   {

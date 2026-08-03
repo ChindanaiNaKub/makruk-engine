@@ -309,6 +309,9 @@ def main():
     ap.add_argument("--bootstrap", type=int, default=0,
                     help="refits on N bootstrap resamples of the training GAMES, to measure identifiability")
     ap.add_argument("--boot-iters", type=int, default=1500)
+    ap.add_argument("--free", default="",
+                    help="comma-separated params to fit; everything else is HELD at its shipped value. "
+                         "Isolates one change so its held-out loss is not credited with the others'.")
     ap.add_argument("--seed", type=int, default=7)
     args = ap.parse_args()
 
@@ -379,12 +382,32 @@ def main():
     print(f"shipped eval   train {base_tr:.6f}   test {base_te:.6f}")
 
     # ---- fit ----
+    # `--free` holds every unnamed parameter at its shipped value by zeroing its
+    # gradient. Isolating one change matters: a joint fit's held-out gain belongs
+    # to all 19 parameters at once, and attributing it to the one you happen to be
+    # interested in is how a term gets shipped on someone else's evidence.
+    free = [n.strip() for n in args.free.split(",") if n.strip()]
+    if free:
+        unknown = [n for n in free if n not in IDX]
+        if unknown:
+            print(f"REFUSED: unknown parameter(s) {unknown}. Known: {', '.join(NAMES)}")
+            sys.exit(2)
+        mask_free = torch.zeros(len(PARAMS), dtype=torch.float64)
+        for n in free:
+            mask_free[IDX[n]] = 1.0
+        print(f"\nfitting ONLY: {', '.join(free)}  ({len(free)} of {len(PARAMS)} parameters)")
+        print("  every other parameter is held at its shipped value.")
+    else:
+        mask_free = None
+
     w = ship.clone().requires_grad_(True)
     opt = torch.optim.Adam([w], lr=1.5)
     for it in range(args.iters):
         opt.zero_grad()
         L = loss_K(w, K, trt)
         L.backward()
+        if mask_free is not None:
+            w.grad *= mask_free
         opt.step()
         if (it + 1) % 1000 == 0:
             print(f"  iter {it+1:5d}  train {L.item():.6f}  test {loss_K(w, K, tet).item():.6f}",

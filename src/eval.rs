@@ -135,6 +135,15 @@ fn counting_term(game: &Game, color: Color) -> i32 {
 
     // Distance the counting side still has to survive. Small linear term so
     // it shapes move choice without swamping material.
+    // 3 and 1 are hand-written and TESTED. A constrained texel fit over 600k
+    // positions of bootstrap-v2 wanted 6.3 and 2.7 — both roughly double, the
+    // largest held-out gain of any pair in this eval (-0.82%). Gate A at equal
+    // time rejected it: b0054, 48.8% (-9 Elo), LLR -9.38, against a clean 50.0%
+    // control (b0053). Redraw ticket 05.
+    //
+    // So: lower held-out loss is not Elo, demonstrated on this engine rather
+    // than borrowed from Zurichess. Do not re-derive these two constants from a
+    // loss curve; the next attempt needs a different instrument, not a rerun.
     let pressure = match c.kind {
         CountingType::PiecesHonor => remaining * 3,
         CountingType::BoardHonor => {

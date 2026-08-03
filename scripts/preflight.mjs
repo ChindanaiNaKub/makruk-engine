@@ -110,9 +110,17 @@ async function checkArmedEval(side) {
 // proved the fix. Which is exactly why identical sides must stay LEGAL when
 // asked for explicitly — see --control.
 function sideIdentity(side) {
-  if (!side.env.MAKURUK_WEIGHTS || side.env.MAKURUK_EVAL !== "net") return "classic";
+  // The BINARY is part of a side's identity, not just its eval. Two different
+  // builds both playing the classical eval are two different engines, and
+  // without this the check called them identical and refused a legitimate
+  // Gate A on an `src/` change (redraw ticket 05).
+  let bin = "";
+  if (side.bin && existsSync(side.bin)) {
+    bin = ":" + createHash("sha256").update(readFileSync(side.bin)).digest("hex").slice(0, 12);
+  }
+  if (!side.env.MAKURUK_WEIGHTS || side.env.MAKURUK_EVAL !== "net") return "classic" + bin;
   const sha = createHash("sha256").update(readFileSync(side.env.MAKURUK_WEIGHTS)).digest("hex");
-  return `net:${sha.slice(0, 16)}`;
+  return `net:${sha.slice(0, 16)}${bin}`;
 }
 
 function checkSidesDiffer(sides, control) {

@@ -52,9 +52,11 @@ export function fairyWasmPath(fairyDir) {
 /// reading one function can still be given different arguments, but they can no
 /// longer disagree about what identity MEANS.
 export function sidesIdentity({ ourEngine, oppIsOurs, fairyBin, fairyDir }) {
-  const mine = binaryId(ourEngine);
+  // Always hash the file that will actually run. `oppIsOurs` no longer implies
+  // "the same file" — OPP_BIN lets a DIFFERENT build of our engine be the
+  // opponent, which is the whole point of a Gate A on an `src/` change.
   return {
-    mine,
-    opponent: oppIsOurs ? mine : binaryId(fairyBin ?? fairyWasmPath(fairyDir)),
+    mine: binaryId(ourEngine),
+    opponent: binaryId(oppIsOurs ? (fairyBin ?? ourEngine) : (fairyBin ?? fairyWasmPath(fairyDir))),
   };
 }
