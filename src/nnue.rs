@@ -177,6 +177,44 @@ fn vec_to_arr<const N: usize>(v: Vec<f32>) -> Result<[f32; N], String> {
 /// Encode a Game position into (feature indices, counting channels).
 /// Mirrors training/makruk/features.py exactly: stm-canonical rank-flip +
 /// color-swap, PM folds to M, type order K M S N R P.
+/// Max active features = max pieces on a makruk board = 32 (16 per side at the
+/// start, and nothing ever adds a piece — promotion replaces a bia with a met).
+pub const MAX_FEATURES: usize = 32;
+
+/// Allocation-free encode: writes feature indices into a caller-owned buffer and
+/// returns how many. `encode` re-sums the whole feature transformer on every
+/// node, so it runs in the hottest loop in the engine, and the `Vec` it used to
+/// build meant a heap allocation per node (redraw ticket 08).
+pub fn encode_into(game: &Game, idxs: &mut [u32; MAX_FEATURES]) -> (usize, [f32; N_CHANNELS]) {
+    let flip = game.turn == Color::Black;
+    let mut n = 0usize;
+    for (idx, cell) in game.board.squares.iter().enumerate() {
+        let piece = match cell {
+            Some(p) => *p,
+            None => continue,
+        };
+        let (r, c) = (idx / 8, idx % 8);
+        let sq = if flip { (7 - r) * 8 + c } else { idx };
+        let color = if flip { piece.color.other() } else { piece.color };
+        let kind_i = match piece.kind {
+            Kind::K => 0,
+            Kind::M | Kind::PM => 1,
+            Kind::S => 2,
+            Kind::N => 3,
+            Kind::R => 4,
+            Kind::P => 5,
+        };
+        let band = if color == Color::White { 0 } else { 6 };
+        // A board can only hold 32 pieces; the guard keeps a corrupt position
+        // from writing past the buffer rather than trusting that invariant.
+        if n < MAX_FEATURES {
+            idxs[n] = (sq * 12 + kind_i + band) as u32;
+            n += 1;
+        }
+    }
+    (n, channels(game))
+}
+
 pub fn encode(game: &Game) -> (Vec<u32>, [f32; N_CHANNELS]) {
     let flip = game.turn == Color::Black;
     let mut idxs = Vec::with_capacity(32);
@@ -296,8 +334,9 @@ pub fn net_score(game: &Game) -> Option<i32> {
     }
     let guard = NET.read().ok()?;
     let net = guard.as_ref()?;
-    let (idxs, ch) = encode(game);
-    Some(net.eval_cp(&idxs, &ch))
+    let mut buf = [0u32; MAX_FEATURES];
+    let (n, ch) = encode_into(game, &mut buf);
+    Some(net.eval_cp(&buf[..n], &ch))
 }
 
 #[cfg(test)]
