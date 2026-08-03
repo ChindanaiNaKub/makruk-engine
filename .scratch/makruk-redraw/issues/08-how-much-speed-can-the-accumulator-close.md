@@ -116,3 +116,67 @@ movetime may still fail on the last 11%.
 
 **Do not expect it to be sufficient.** If Gate A fails after the accumulator, the next lever is L1,
 and that is a training ticket with its own costed decision.
+
+## Implementation (2026-08-03) — built, correct, and it delivers 1.10x, not 1.49x
+
+**The accumulator is in and it works. It is also worth far less than the arithmetic predicted, and the
+reason is a flaw in how the arithmetic was estimated — including by me, twice.**
+
+| | nps | depth @100 ms | depth @1000 ms |
+|---|---|---|---|
+| net, `encode` per node | 347,812 | 5 | 9 |
+| **net, incremental accumulator** | **381,830** | **6** | 9 |
+| classic | 720,896 | 8 | 10 |
+
+**+9.8% nps, +1 ply at the shipping condition.** The net is still **1.89× slower** than classic and
+still **2 plies short** at 100 ms.
+
+### Correctness
+
+Eval is **bit-identical** to the `encode` path — same score (cp −1), same PV, at the same depth. The
+required consistency test is in (`accumulator_matches_encode_through_do_and_undo`): it walks *every*
+legal move to depth 3 and asserts the maintained accumulator equals a fresh rebuild after **both**
+`do_move` and `undo_move`, in both perspectives, to 1e-3.
+
+**Two perspectives are forced, not chosen.** `encode` flips square *and* colour when Black is to move,
+so every feature index changes every ply; one accumulator would need rebuilding each move, which is
+the thing being removed.
+
+**The test earned its place immediately.** The first version dropped the feature transformer's
+`clamp(0.0, 1.0)` during a refactor and shifted the eval by ~130 cp (cp −1 → cp 132) **with every
+pre-existing test green** — `cargo test` and mirror-perft do not touch the accumulator, exactly as the
+ticket warned.
+
+### Why 1.10× and not 1.49×
+
+Two errors, both in the estimate rather than the code:
+
+1. **Op counts are not costs.** The FT re-sum is a contiguous `zip` add loop that auto-vectorises
+   cleanly (~8 f32 per AVX instruction). The tail's fc1 is 32 row-wise dot products, each ending in a
+   horizontal reduction, which vectorises far worse. So the 8,192 ops removed were **cheap** ops and
+   the 9,600 left behind are **expensive** ones. Counting them as equal overstated the win.
+2. **This search makes more moves than evals.** Work moved out of `net_score` and into
+   `do_move`/`undo_move` only pays when a node is actually evaluated — and null-move pruning, LMR, TT
+   cutoffs and moves pruned before evaluation all call `do_move` without ever calling the eval. On
+   those paths the accumulator is pure added cost.
+
+Batching the `NET` read-lock to one acquisition per move (from one per piece) changed nothing —
+384,255 → 381,830, inside noise — so locking was never the bottleneck either.
+
+### Where this leaves the map's keystone
+
+The thesis was: close the speed gap, and the net's better-at-equal-depth eval becomes real at equal
+movetime. **The accumulator does not close it.** 1.10× against a 2.07× deficit, +1 ply against a 2-ply
+gap.
+
+What remains, in order of what the evidence supports:
+
+- **fc1 is now ~88% of everything left** and its width is `L1 + 9 = 265`. Cutting L1 shrinks the FT
+  *and* fc1 together and is the only lever with real headroom — but it is a different network shape,
+  so it needs **retraining: a costed training ticket**, which this map's standing rule puts outside
+  this ticket.
+- **Native SIMD is unmeasured.** `.cargo/config.toml` sets `+simd128` for wasm32 only; native builds
+  get no explicit directive. Free to try, no retraining.
+- **Gate A at equal movetime has not been run.** On the nps evidence it is expected to fail — the net
+  is 2 plies down where it was 3 — so it is left as an explicit decision rather than spent
+  automatically.

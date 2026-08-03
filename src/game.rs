@@ -33,6 +33,10 @@ pub struct Game {
     /// When true, a freshly detected Sak Kradan begins counting immediately.
     /// Search default: true (weaker side always counts in rational play).
     pub board_honor_auto_start: bool,
+    /// Incrementally-maintained NNUE feature sums (redraw ticket 08). `None`
+    /// whenever the net is not armed, so the classical eval pays nothing for
+    /// this — not a branch in the hot loop, not a byte of state.
+    pub nnue_acc: Option<Box<crate::nnue::Accumulator>>,
 }
 
 #[derive(Clone, Copy)]
@@ -67,9 +71,15 @@ impl Game {
             outcome: Outcome::Ongoing,
             position_history: Vec::new(),
             board_honor_auto_start,
+            nnue_acc: None,
         };
         game.counting = counting::fresh_counting_state(&game.board, board_honor_auto_start);
         game.outcome = game.initial_outcome();
+        // Built once here, then only ever edited. Skipped entirely unless the
+        // net is armed, so the classical eval carries no cost for it.
+        if crate::nnue::net_armed() {
+            game.nnue_acc = crate::nnue::fresh_accumulator(&game).map(Box::new);
+        }
         game
     }
 
@@ -124,6 +134,22 @@ impl Game {
             .expect("do_move on empty square");
         let captured = self.board.squares[mv.to as usize].take();
         let promoted = piece.kind == Kind::P && sq_row(mv.to) == piece.color.promotion_row();
+        // Deltas mirror the three board edits below, in the same order. A move
+        // is at most: mover leaves `from`, victim leaves `to`, mover arrives at
+        // `to` — possibly as a met rather than a bia.
+        if let Some(acc) = self.nnue_acc.as_deref_mut() {
+            let landed = if promoted { Kind::PM } else { piece.kind };
+            let mut e: [crate::nnue::AccEdit; 3] =
+                [(mv.from as usize, piece.kind, piece.color, false); 3];
+            let mut n = 1;
+            if let Some(c) = captured {
+                e[n] = (mv.to as usize, c.kind, c.color, false);
+                n += 1;
+            }
+            e[n] = (mv.to as usize, landed, piece.color, true);
+            n += 1;
+            crate::nnue::acc_apply(acc, &e[..n]);
+        }
         if promoted {
             piece.kind = Kind::PM;
         }
@@ -146,6 +172,21 @@ impl Game {
         let mut piece = self.board.squares[undo.mv.to as usize]
             .take()
             .expect("undo_move on empty square");
+        // Exact inverse of do_move's deltas, applied against the pre-demotion
+        // kind because that is what landed on `to`.
+        if let Some(acc) = self.nnue_acc.as_deref_mut() {
+            let original = if undo.promoted { Kind::P } else { piece.kind };
+            let mut e: [crate::nnue::AccEdit; 3] =
+                [(undo.mv.to as usize, piece.kind, piece.color, false); 3];
+            let mut n = 1;
+            if let Some(c) = undo.captured {
+                e[n] = (undo.mv.to as usize, c.kind, c.color, true);
+                n += 1;
+            }
+            e[n] = (undo.mv.from as usize, original, piece.color, true);
+            n += 1;
+            crate::nnue::acc_apply(acc, &e[..n]);
+        }
         if undo.promoted {
             piece.kind = Kind::P;
         }

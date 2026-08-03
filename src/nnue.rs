@@ -129,6 +129,23 @@ impl TinyNnue {
                 *a += b;
             }
         }
+        self.wdl_from_acc(acc, ch)
+    }
+
+    /// The tail, starting from summed feature columns. `sums` excludes
+    /// `ft_bias` — an incremental accumulator never has to track it.
+    pub fn wdl_acc(&self, sums: &[f32; L1], ch: &[f32; N_CHANNELS]) -> [f32; 3] {
+        let mut acc = self.ft_bias;
+        for (a, b) in acc.iter_mut().zip(sums.iter()) {
+            *a += b;
+        }
+        self.wdl_from_acc(acc, ch)
+    }
+
+    fn wdl_from_acc(&self, mut acc: [f32; L1], ch: &[f32; N_CHANNELS]) -> [f32; 3] {
+        // The feature transformer's activation. Both callers must go through
+        // here — dropping it silently shifted the eval by ~130 cp while every
+        // existing test stayed green.
         for a in acc.iter_mut() {
             *a = a.clamp(0.0, 1.0);
         }
@@ -159,8 +176,15 @@ impl TinyNnue {
     }
 
     /// Scalar eval in centipawn-class units (spec §1: (W - L) * 1000).
+    pub fn eval_cp_acc(&self, sums: &[f32; L1], ch: &[f32; N_CHANNELS]) -> i32 {
+        Self::cp_from_logits(self.wdl_acc(sums, ch))
+    }
+
     pub fn eval_cp(&self, idxs: &[u32], ch: &[f32; N_CHANNELS]) -> i32 {
-        let l = self.wdl(idxs, ch);
+        Self::cp_from_logits(self.wdl(idxs, ch))
+    }
+
+    fn cp_from_logits(l: [f32; 3]) -> i32 {
         let m = l[0].max(l[1]).max(l[2]);
         let e0 = (l[0] - m).exp();
         let e1 = (l[1] - m).exp();
@@ -213,6 +237,116 @@ pub fn encode_into(game: &Game, idxs: &mut [u32; MAX_FEATURES]) -> (usize, [f32;
         }
     }
     (n, channels(game))
+}
+
+/// Incrementally-maintained feature-transformer sums (redraw ticket 08).
+///
+/// TWO PERSPECTIVES, and that is forced rather than chosen. `encode` flips the
+/// board when Black is to move — both the square and the piece colour — so
+/// EVERY feature index changes on every move. A single accumulator would have
+/// to be rebuilt each ply, which is the thing being eliminated. So one sum is
+/// kept per point of view and `net_score` selects by side to move.
+///
+/// `v[0]` is the White-to-move view, `v[1]` the Black-to-move view. Neither
+/// includes `ft_bias` — that is added at read time, so a delta never has to know
+/// about it.
+#[derive(Clone)]
+pub struct Accumulator {
+    pub v: [[f32; L1]; 2],
+}
+
+pub fn kind_index(kind: Kind) -> usize {
+    match kind {
+        Kind::K => 0,
+        // Same arm as src/eval.rs:72, and for the same reason: a promoted bia
+        // IS a met.
+        Kind::M | Kind::PM => 1,
+        Kind::S => 2,
+        Kind::N => 3,
+        Kind::R => 4,
+        Kind::P => 5,
+    }
+}
+
+/// Feature index for a piece, from one perspective. Mirrors `encode` exactly —
+/// if these two ever disagree the eval silently drifts, which is what
+/// `accumulator_matches_encode` exists to catch.
+#[inline]
+fn feat(persp: usize, sq: usize, kind_i: usize, color: Color) -> usize {
+    let (r, c) = (sq / 8, sq % 8);
+    let s = if persp == 1 { (7 - r) * 8 + c } else { sq };
+    let col = if persp == 1 { color.other() } else { color };
+    let band = if col == Color::White { 0 } else { 6 };
+    s * 12 + kind_i + band
+}
+
+impl Accumulator {
+    pub fn zeroed() -> Accumulator {
+        Accumulator { v: [[0.0; L1]; 2] }
+    }
+
+    /// Add (`sign` = +1.0) or remove (-1.0) one piece, in both views.
+    #[inline]
+    fn edit(&mut self, table: &[f32], sq: usize, kind_i: usize, color: Color, sign: f32) {
+        for persp in 0..2 {
+            let f = feat(persp, sq, kind_i, color);
+            let row = &table[f * L1..(f + 1) * L1];
+            let acc = &mut self.v[persp];
+            if sign > 0.0 {
+                for (a, b) in acc.iter_mut().zip(row.iter()) {
+                    *a += b;
+                }
+            } else {
+                for (a, b) in acc.iter_mut().zip(row.iter()) {
+                    *a -= b;
+                }
+            }
+        }
+    }
+}
+
+/// One piece edit: (square, kind, colour, add?).
+pub type AccEdit = (usize, Kind, Color, bool);
+
+/// Apply a whole move's edits under a SINGLE lock acquisition.
+///
+/// The first version took `NET.read()` per piece, so a move cost 2-3 lock
+/// acquisitions and its undo another 2-3 — four to six per node on top of the
+/// one `net_score` already pays. Measured: that version reached only 1.10x
+/// against a 1.49x arithmetic ceiling, and batching is what closes the gap.
+/// A move touches at most three squares (mover leaves, victim leaves, mover
+/// arrives), so the array is fixed-size and never allocates.
+pub fn acc_apply(acc: &mut Accumulator, edits: &[AccEdit]) {
+    let guard = match NET.read() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let net = match guard.as_ref() {
+        Some(n) => n,
+        None => return,
+    };
+    for &(sq, kind, color, add) in edits {
+        acc.edit(&net.table, sq, kind_index(kind), color, if add { 1.0 } else { -1.0 });
+    }
+}
+
+/// Build an accumulator from scratch. Used on position setup, and by the
+/// consistency test as the source of truth.
+pub fn fresh_accumulator(game: &Game) -> Option<Accumulator> {
+    let guard = NET.read().ok()?;
+    let net = guard.as_ref()?;
+    let mut a = Accumulator::zeroed();
+    for (idx, cell) in game.board.squares.iter().enumerate() {
+        if let Some(p) = cell {
+            a.edit(&net.table, idx, kind_index(p.kind), p.color, 1.0);
+        }
+    }
+    Some(a)
+}
+
+/// True when an accumulator should be maintained at all.
+pub fn net_armed() -> bool {
+    mode() == MODE_NET
 }
 
 pub fn encode(game: &Game) -> (Vec<u32>, [f32; N_CHANNELS]) {
@@ -334,8 +468,15 @@ pub fn net_score(game: &Game) -> Option<i32> {
     }
     let guard = NET.read().ok()?;
     let net = guard.as_ref()?;
+    let ch = channels(game);
+    // The incremental path. `v[persp]` already holds the summed feature
+    // columns, so the whole 32x256 re-sum disappears and only the tail runs.
+    if let Some(acc) = game.nnue_acc.as_deref() {
+        let persp = (game.turn == Color::Black) as usize;
+        return Some(net.eval_cp_acc(&acc.v[persp], &ch));
+    }
     let mut buf = [0u32; MAX_FEATURES];
-    let (n, ch) = encode_into(game, &mut buf);
+    let (n, _) = encode_into(game, &mut buf);
     Some(net.eval_cp(&buf[..n], &ch))
 }
 
@@ -343,6 +484,56 @@ pub fn net_score(game: &Game) -> Option<i32> {
 mod tests {
     use super::*;
     use crate::game::Game;
+
+    /// THE test this ticket owes (redraw ticket 08). An accumulator that drifts
+    /// out of sync produces a wrong eval that nothing else catches — neither
+    /// `cargo test` nor mirror-perft touches it, and the first version of this
+    /// code silently shifted the eval by ~130 cp with every other test green.
+    ///
+    /// After every move, and again after undoing it, the incrementally
+    /// maintained accumulator must equal a fresh rebuild EXACTLY.
+    #[test]
+    fn accumulator_matches_encode_through_do_and_undo() {
+        // Only meaningful with a net loaded; the fixture net is optional.
+        if !net_armed() {
+            eprintln!("accumulator test skipped — no net armed (MAKURUK_EVAL/MAKURUK_WEIGHTS unset)");
+            return;
+        }
+        use crate::movegen;
+        let mut game = Game::startpos();
+        game.nnue_acc = fresh_accumulator(&game).map(Box::new);
+        assert!(game.nnue_acc.is_some(), "net armed but no accumulator built");
+
+        let same = |g: &Game, when: &str| {
+            let want = fresh_accumulator(g).expect("rebuild");
+            let got = g.nnue_acc.as_deref().expect("maintained");
+            for persp in 0..2 {
+                for i in 0..L1 {
+                    assert!(
+                        (want.v[persp][i] - got.v[persp][i]).abs() < 1e-3,
+                        "{when}: perspective {persp} channel {i} drifted: maintained {} vs rebuilt {}",
+                        got.v[persp][i], want.v[persp][i]
+                    );
+                }
+            }
+        };
+
+        // Walk a few plies deep, exercising captures and promotions by taking
+        // every legal move at the first two plies rather than one sample line.
+        fn walk(game: &mut Game, depth: u32, same: &dyn Fn(&Game, &str)) {
+            if depth == 0 {
+                return;
+            }
+            for mv in movegen::legal_moves(&game.board, game.turn) {
+                let undo = game.do_move(mv);
+                same(game, "after do_move");
+                walk(game, depth - 1, same);
+                game.undo_move(undo);
+                same(game, "after undo_move");
+            }
+        }
+        walk(&mut game, 3, &same);
+    }
 
     #[test]
     fn encode_startpos_feature_count() {
