@@ -1,7 +1,7 @@
 # How much of the net's speed deficit can the accumulator close?
 
 Type: task (AFK)
-Status: claimed (2026-08-03)
+Status: resolved (2026-08-03) — Gate A REJECT
 Blocked by: —
 
 ## Question
@@ -206,3 +206,71 @@ shortfall — removing cheap streaming adds while leaving expensive reductions b
 **Consequence: there is no free speed left.** The two levers that cost nothing (accumulator, native
 SIMD) are now measured at +9.8% and −2.1%. Everything remaining changes the network shape and needs
 retraining.
+
+## Resolution (2026-08-03) — Gate A REJECTS. The keystone thesis does not survive.
+
+| block | kind | conditions | result |
+|---|---|---|---|
+| `b0058` | gate-a | net vs classic, 100/100 ms | **37.2%** over 47 games (1–13–29 +4 mp); SPRT **38.8% (−80 Elo), LLR −3.21, REJECT** at 20 pairs |
+| `b0059` | control | net vs net, 100/100 ms | **52.5%** — PASS, ±15.2 pp band. Clears b0058. |
+
+**The answer to the ticket's question 1** — measured nps and depth, before and after:
+
+| | nps | depth @100 ms |
+|---|---|---|
+| net before | 347,812 | 5 |
+| net after | 381,830 | **6** |
+| classic | 720,896 | 8 |
+
+**+9.8% and +1 ply. It does not reach classic's depth 8, and Gate A at equal movetime still rejects.**
+
+**On comparing 38.8% against the pre-work 44.2% (`b0028`): do not.** Both are SPRT point estimates
+taken at the reject boundary, so both are biased away from it, and they stopped at different points
+(78 games vs 47). This project's own rule forbids reading them as effect sizes. What is established is
+that **the speed work did not make the net pass** — not that it made it worse.
+
+### The keystone question, answered
+
+The map's thesis was that the net's better-at-equal-depth eval becomes real once the speed gap closes.
+**Both zero-cost levers are now measured and neither closes it:**
+
+| lever | measured |
+|---|---|
+| incremental accumulator | **+9.8%** |
+| native AVX2+FMA | **−2.1%** (refuted, reverted) |
+| **needed** | **2.07×** |
+
+Everything left changes the network shape. `fc1` is ~88% of the remaining per-node cost and its width
+is `L1 + 9`, so the only lever with headroom is a **smaller L1** — retraining, therefore a costed
+ticket, therefore outside this map's cheap half.
+
+**[Set the target](07-set-the-target.md) should treat the net as not shippable at equal movetime**
+unless a training ticket is opened and succeeds. Read with [ticket 01](01-where-the-engine-actually-stands.md),
+resolved the same day: classic is 10.2 points short of even at skill 5, and it is the *stronger*
+artifact in real play.
+
+### Two rig defects found on the way, neither caused by this work
+
+1. **A latent init race in the engine.** `mode()` published `MODE = MODE_NET` *before* reading the
+   weights, so any concurrent caller inside that window saw "net armed" with `NET` still empty —
+   and `net_score` returning `None` is a **silent fallback to the classical eval**. Single-threaded
+   runs never hit it; the accumulator test running in parallel with another test hit it immediately.
+   Fixed by publishing `MODE` last under `Acquire`/`Release`.
+2. **The `cargo-test` gate inherited the arena's eval environment.**
+   `tests/nnue_agreement.rs:11` honours `MAKURUK_WEIGHTS`, so gating a net pointed the parity test at
+   *that* net while its expected logits come from the `out/v1` fixture — a guaranteed mismatch that
+   **refuses a block for a defect that does not exist.** Earlier net blocks escaped only because the
+   gate cache was warm; the first `src/` change since exposed it. The gate now runs in a clean env,
+   the same sanitising preflight already does for the opponent process.
+
+### And the ledger audit caught a live one, unprompted
+
+`b0058` tripped clause (a) — *"37.2% is 22.1pp from the 59.3% previously measured at this exact
+cell"* — and **`scripts/ledger-audit.mjs` immediately flagged the reason as unsound**: that "cell"
+pools `b0028` (100/100 ms) with `b0040` (depth 5), `b0043` (depth 7) and `b0049` (depth 6), so the
+quoted average is over blocks run under a different search condition.
+
+That is the clause-(a) pooling defect this map parked in its fog, now **firing on new blocks** — the
+4th instance, and exactly the "alarm fatigue on a check that exists to catch real deviations" the fog
+entry predicted. The guard built by the ledger map caught it on a fresh row with nobody looking.
+Baselined as the same known class (now 5 entries); the underlying fix remains parked.

@@ -53,7 +53,20 @@ const GATES = {
   "cargo-test": {
     why: "engine behaviour (counting rules, do/undo symmetry, nnue parity)",
     inputs: () => [...filesIn(path.join(root, "src"), ".rs"), ...filesIn(path.join(root, "tests"), ".rs"), path.join(root, "Cargo.toml")],
-    run: () => spawnSync("cargo", ["test", "--release"], { cwd: root, stdio: "inherit" }).status === 0,
+    // The eval env is STRIPPED, and that is not incidental. `tests/
+    // nnue_agreement.rs:11` honours MAKURUK_WEIGHTS, so when the arena is gating
+    // a net it points the parity test at that net while the expected logits come
+    // from the out/v1 fixture — a guaranteed mismatch, and the gate then refuses
+    // a block for a defect that does not exist. Earlier net blocks only escaped
+    // it because the gate cache was warm; the first `src/` change since exposed
+    // it. This gate validates the CODE, so it must run in the code's own
+    // environment, not the block's. Same sanitising preflight already does for
+    // the opponent process.
+    run: () => {
+      const env = { ...process.env };
+      for (const k of ["MAKURUK_EVAL", "MAKURUK_WEIGHTS", "OPP_WEIGHTS"]) delete env[k];
+      return spawnSync("cargo", ["test", "--release"], { cwd: root, stdio: "inherit", env }).status === 0;
+    },
   },
   "mirror-perft": {
     why: "movegen agrees with fairy-stockfish move for move",

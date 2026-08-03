@@ -405,28 +405,35 @@ const MODE_CLASSIC: u8 = 1;
 const MODE_NET: u8 = 2;
 
 fn mode() -> u8 {
-    let m = MODE.load(Ordering::Relaxed);
+    let m = MODE.load(Ordering::Acquire);
     if m != 0 {
         return m;
     }
     let want_net = std::env::var("MAKURUK_EVAL").map(|v| v == "net").unwrap_or(false);
-    let resolved = if want_net { MODE_NET } else { MODE_CLASSIC };
-    MODE.store(resolved, Ordering::Relaxed);
-    if resolved == MODE_NET {
+    let want = if want_net { MODE_NET } else { MODE_CLASSIC };
+    // MODE IS PUBLISHED LAST, AND THAT ORDER IS LOAD-BEARING. It used to be
+    // stored before the weights were read, so for the length of a 204 KB load
+    // plus a 768x256 dequantise any other caller saw "net armed" while `NET` was
+    // still None — and `net_score` returning None means a SILENT fallback to the
+    // classical eval. Single-threaded runs never hit the window; the accumulator
+    // consistency test running in parallel with another test did, immediately.
+    if want == MODE_NET {
         let path = std::env::var("MAKURUK_WEIGHTS").unwrap_or_else(|_| "makruk-tiny.bin".to_string());
         match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| TinyNnue::from_bytes(&b)) {
             Ok(net) => {
                 *NET.write().unwrap() = Some(net);
                 *ARMED.write().unwrap() = format!("net {path}");
+                MODE.store(MODE_NET, Ordering::Release);
             }
             Err(e) => {
                 eprintln!("[nnue] failed to load {path}: {e} — falling back to classic eval");
-                MODE.store(MODE_CLASSIC, Ordering::Relaxed);
                 *ARMED.write().unwrap() = format!("classic fallback-from={path} reason={e}");
+                MODE.store(MODE_CLASSIC, Ordering::Release);
             }
         }
     } else {
         *ARMED.write().unwrap() = "classic".to_string();
+        MODE.store(MODE_CLASSIC, Ordering::Release);
     }
     MODE.load(Ordering::Relaxed)
 }
