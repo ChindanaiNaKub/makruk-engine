@@ -26,24 +26,23 @@ Rust Makruk engine. Sole rule authority: markrukthai `shared/engine.ts` + `share
 
 <!-- BEGIN GENERATED standings — node scripts/results.mjs --write-agents -->
 
-_Generated from `results/blocks.jsonl` (14 live blocks). Do not hand-edit — run `node scripts/results.mjs --write-agents`._
+_Generated from `results/blocks.jsonl` (13 live blocks). Do not hand-edit — run `node scripts/results.mjs --write-agents`._
 
-| id | kind | ours | opponent | n | W–L–D | score |  |
-|---|---|---|---|---|---|---|---|
-| b0009 | control | net 4452f72612f1 | net 4452f72612f1 | 16 | 3–6–4 (3 mp) | 40.6% |  |
-| b0021 | gate-b | classic | fairy skill 3 | 64 | 33–4–26 (1 mp) | 72.7% |  |
-| b0022 | gate-b | net 4452f72612f1 | fairy skill 3 | 64 | 41–13–7 (3 mp) | 71.9% |  |
-| b0023 | gate-b | net 4452f72612f1 | fairy skill 5 | 64 | 14–34–9 (7 mp) | 34.4% |  |
-| b0024 | gate-b | net 4452f72612f1 | fairy skill 8 | 64 | 5–49–9 (1 mp) | 15.6% |  |
-| b0025 | gate-b | net 4452f72612f1 | fairy skill 10 | 64 | 0–64–0 | 0.0% |  |
-| b0026 | gate-b | net 4452f72612f1 | fairy skill 20 | 64 | 0–64–0 | 0.0% |  |
-| b0027 | control | net 4452f72612f1 | net 4452f72612f1 | 120 | 18–17–70 (15 mp) | 50.4% |  |
-| b0028 | gate-a | net 4452f72612f1 | classic | 78 | 8–17–46 (7 mp) | 44.2% |  |
-| b0029 | gate-a | classic | net 4452f72612f1 | 45 | 12–1–30 (2 mp) | 62.2% |  |
-| b0035 | control | classic | classic | 20 | 0–1–15 (4 mp) | 47.5% |  |
-| b0036 | control | classic | classic | 20 | 1–0–12 (7 mp) | 52.5% |  |
-| b0037 | gate-b | classic | fairy skill 4 +nnue | 16 | 2–4–6 (4 mp) | 43.8% |  |
-| b0038 | gate-a | net e499401b710b | classic | 46 | 2–16–28 | 34.8% |  |
+| id | kind | ours | opponent | conditions | n | W–L–D | score |  |
+|---|---|---|---|---|---|---|---|---|
+| b0021 | gate-b | classic | fairy skill 3 | 100/100ms | 64 | 33–4–26 (1 mp) | 72.7% |  |
+| b0022 | gate-b | net 4452f72612f1 | fairy skill 3 | 100/100ms | 64 | 41–13–7 (3 mp) | 71.9% |  |
+| b0023 | gate-b | net 4452f72612f1 | fairy skill 5 | 100/100ms | 64 | 14–34–9 (7 mp) | 34.4% |  |
+| b0024 | gate-b | net 4452f72612f1 | fairy skill 8 | 100/100ms | 64 | 5–49–9 (1 mp) | 15.6% |  |
+| b0025 | gate-b | net 4452f72612f1 | fairy skill 10 | 100/100ms | 64 | 0–64–0 | 0.0% |  |
+| b0026 | gate-b | net 4452f72612f1 | fairy skill 20 | 100/100ms | 64 | 0–64–0 | 0.0% |  |
+| b0028 | gate-a | net 4452f72612f1 | classic | 100/100ms | 78 | 8–17–46 (7 mp) | 44.2% |  |
+| b0029 | gate-a | classic | net 4452f72612f1 | 100/100ms | 45 | 12–1–30 (2 mp) | 62.2% |  |
+| b0037 | gate-b | classic | fairy skill 4 +nnue | 100/400ms | 16 | 2–4–6 (4 mp) | 43.8% |  |
+| b0038 | gate-a | net e499401b710b | classic | 100/100ms | 46 | 2–16–28 | 34.8% |  |
+| b0040 | gate-a | net 4452f72612f1 | classic | depth 5 | 192 | 38–22–101 (31 mp) | 54.2% | cleared by b0041; amended |
+| b0043 | gate-a | net 4452f72612f1 | classic | depth 7 | 47 | 16–0–23 (8 mp) | 67.0% | cleared by b0044; amended |
+| b0049 | gate-a | net 4452f72612f1 | classic | depth 6 | 16 | 7–0–7 (2 mp) | 71.9% | cleared by b0048 |
 
 <!-- END GENERATED standings -->
 
@@ -58,6 +57,7 @@ _Generated from `results/blocks.jsonl` (14 live blocks). Do not hand-edit — ru
 **Never use `env $var node …` in a driver script** — zsh does not word-split unquoted parameters, so `MAKURUK_EVAL` silently became `"net MAKURUK_WEIGHTS=/path"` and three "net" blocks measured the classical eval. Use inline prefix assignments. match-arena now fatals on a malformed `MAKURUK_EVAL` and prints each side's eval before every block.
 **Transposition tables MUST be cleared between games, and match-arena now sends `ucinewgame` before every one.** `src/search.rs:214` replaces on depth alone with no generation counter, so after one game the TT saturates with high-depth entries that no shallower store can evict and every later game in a block runs with an effectively dead TT. The probe validates the key (`search.rs:210`), so entries were never *wrong*, only un-evictable. Measured cost at n=128, seed 7, r3 vs fairy skill 3: **67.6% cleared vs 50.0% carried — 17.6 points, 4.0σ.** Every arena number recorded before 2026-08-02 was measured this way and understates the engine; classic was hurt worse than the net (it searches deeper, so it leaned on the TT harder). `--keep-tt` restores the old behaviour for diagnosis only. The **site is unaffected** — `browserEngineBotWorker.ts:118` sends `ucinewgame`. Adding TT aging is engine work and belongs to the parked strength map.
 **A self-play control block is now mandatory on a trigger, and the rig runs it for you.** `scripts/control-trigger.mjs`. Clauses (b) *new binding mechanism* and (c) *first block at a rung* are knowable before any game, so they are **preconditions**: match-arena auto-runs a 20-game control as a fresh child process and refuses to proceed if it fails (`--skip-control` warns loudly). Clause (a) *deviation from the trend* needs the result, so it is a **postcondition**: the block is recorded and marked **`suspect`**, which holds it out of the default `results.mjs` view and out of the generated standings until `node scripts/results.mjs --clear-suspect <id> --control <controlId>` — which *verifies* the control passed rather than trusting you. **The "trend line" is ladder monotonicity** (one block per artifact/rung cell means there is nothing to fit, and a non-monotone ladder is what caught the zsh `env` bug). **SE bands come from the observed W/L/D split, never a binomial** — control b0027 was 58% draws, per-game sd 0.29 not 0.50, so an assumed band runs up to 2.4× too wide and would pass a broken control.
+**Controls are NOT in the standings table above** (ledger ticket 06). A self-play control's expected score is 0.5 *by construction*, so rendering it in a score column beside a Gate A verdict invites one misreading — b0009 is net 4452 vs net 4452 at 40.6%, which scans as the incumbent losing badly and is actually a passing control. `node scripts/results.mjs --kind control` lists them; the default view's footer states how many there are **and whether they pass**, and names any that do not.
 **Gate A is now a sequential test (SPRT).** `node scripts/match-arena.mjs --sprt` — pentanomial (colour-reversed game PAIRS, whose shared opening cancels its own bias; measured sd 0.66–0.79× trinomial), H0 = 0 Elo vs H1 = 30 Elo, α = β = 0.05, 20–**96** pairs. `--elo0/--elo1/--alpha/--beta/--min-pairs/--max-pairs` override; `--games` is ignored. **Hitting the cap without crossing a bound is NOT acceptance** — the incumbent holds; a selection gate fails closed. `node scripts/sprt-selftest.mjs` Monte-Carlos the realised error rates. **Gate B stays fixed-N** on purpose: it is a ladder measurement that must stay comparable across rungs, not an accept/reject.
 The old gate — "≥55% over a fixed 64 games" — had, at the measured per-game sd of 0.42, a **17% false-positive and 50% false-negative rate**. It accepted a coin-flip candidate one time in six. Round 5's transitivity contradictions were that gate working as designed. The SPRT measures 3.6%/3.9% in simulation and decides a clearly-better candidate in ~54 games.
 **The cap is 96 pairs because a bigger cap is *worse*, not just slower.** `node scripts/sprt-cap-sweep.mjs` sweeps it: the wrong-call rate **rises** with the cap (1.0% at 96, 4.1% at the old 400) — a longer walk is more chances to cross the wrong bound. What a cap buys is sensitivity, and the binding case is the merely-good round, not the obvious one: a +150 Elo candidate is decided by 86 games at p90 under any cap ≥ 48, but a **+100 Elo candidate is left inconclusive 43% of the time at cap 48, 19% at 64, and 2.3% at 96**. Do not trim the cap to fit a rounder wall-clock number — cap 64 fits 10 minutes and throws away one good round in five.
