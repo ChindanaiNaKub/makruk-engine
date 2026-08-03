@@ -86,14 +86,75 @@ it §M2's "compressed piece values" argument, which was the *sole* justification
 - **SEE pruning is contested, not settled.** Two independent ~1.2 M-nps engines measure qsearch SEE at **+52/+36 STC**
   (Lynx) and **+36/+25 STC** (Weiss), and it **grows at short time control** — the favourable direction here. Its
   demotion in the deliverable rested on the piece-value argument that just fell.
-- **TT aging is over-ranked.** The three isolated measurements are **+6.5 / +2.2 / +2.0**, and Lynx measured it
-  **negative twice**. Value tracks hash size relative to fill, not depth. The larger, prior fix is the **replacement
-  scheme** — `src/search.rs:214` replaces on depth alone, and replacement-scheme changes measure +17 (Weiss), +6.6
-  (Lynx), +30 (Blunder's bug fix).
+- **TT aging is over-ranked** — *and the follow-on advice was then retracted, see below.* The three isolated
+  measurements are **+6.5 / +2.2 / +2.0**, and Lynx measured it **negative twice**. Value tracks hash size relative to
+  fill, not depth.
 - **Model pruning gates on Ethereal, not Stockfish.** Ethereal's are all ≤10 so every one fires inside a depth-8
   ceiling; Stockfish's mostly do not (check ext `depth > 9`, IID `depth >= 7`, ProbCut `depth >= 8`).
 - **Ablation and addition Elo are different measurements.** RFP is +57 by addition and −32 by ablation. For a sparse,
   shallow engine the addition numbers transfer.
 
-This ticket blocks nothing. It informs [05](05-what-one-eval-term-is-worth.md) and
-[06](06-what-one-search-fix-is-worth.md), both of which now have prices to test rather than guesses to argue.
+### Third pass: the makruk literature exists, and it moved the table again
+
+Two further corrections landed after the peer sweep, both from primary sources, both verified against this repo's own
+constants. The deliverable is now **18 rows, not 16**, and carries a `[K]` evidence class — *measured by someone else,
+on makruk*.
+
+**I retracted my own TT recommendation.** I had written "fix the replacement scheme before adding an age field."
+H.G. Muller's sizing rule kills it: replacement policy cannot register unless the search tree is **≥10× the table**.
+Ours is **885k nps × 100 ms ≈ 88,500 nodes/move against `TT_SIZE = 1 << 18` = 262,144 entries — 0.3×.** The table is
+three times larger than the entire tree for a move. Replacement policy *and* aging both measure ~0 within a search.
+What keeps the row alive at all is makruk's game length — ~30k stores/move × ~100 moves ≈ 3M stores into 262k slots
+≈ **11×** — but that is a cross-move claim, much narrower than the one I started with. TT aging fell from rank 5 to
+**rank 14**.
+
+**There is exactly one makruk-measured Elo figure in the entire literature, and it is about our own code.** Evert
+Glebbeek (SjaakII) replaced `if (in check) depth++` with `if (move gives check && see >= 0) extension = 1` and gained
+**+18 Elo in self-play, in makruk**. `src/search.rs:271` is that naive form verbatim. But `grep -rn "SEE" src/*.rs`
+returns only `game.rs`'s zobrist `SEED` — **we have no SEE at all**, so the +18 is unreachable until SEE is written.
+That raises **SEE's** value (it is now the precondition for the only makruk number in the document), not the check
+extension's.
+
+**Four published makruk piece tables now exist as an external check on the fit** (§K1). Fairy-Max 181/300/450/630,
+SjaakII 187/344/406/625, Makruk-Stockfish mg 159/312/412/676 and eg 192/293/386/645, all at bia = 100. My rua **652
+lands inside the published 625–676 band** — real validation on the one piece the corpus has signal for. My met **112
+is below every published source** (consensus 150–192). And **the shipped table is the outlier of the whole set**:
+highest met (200), lowest rua (500). It is the counting-rule adjudication table pressed into service as a
+playing-strength table.
+
+**The identifiability failure is a documented trap, not a novel finding** (§K3). hgm and jdart, *"Texel tuning for
+piece values"*: in ordinary games material is near-balanced, so there is nearly no signal separating piece values and
+the fit collapses them onto whatever fits the sigmoid positionally. jdart stopped tuning piece values outright.
+**Prescription: split the tuning job.** Positional terms on `bootstrap-v2`, where the measured −4.08% actually lives
+and the problem is well-posed; piece values *not* from this fit — leave them, move them toward the published
+consensus, or seed an imbalance corpus and fit them properly. That last is new datagen and needs its own costed
+ticket.
+
+**Lower held-out loss is not Elo, and lower loss is exactly my evidence** (§K4). Zurichess measured **−28 Elo despite
+a lower MSE** (0.0559 vs 0.0573); iCE measured −20 to −24 because the optimiser zeroed small true terms — betting on
+a draw minimises MSE. Petzke's failure mode is visible in my own §A5 output: king safety driven wholly negative, bia
+advance to zero. **Do not ship the fit unmeasured.**
+
+**A working counting-aware eval exists, and it is not Fairy-Stockfish** (§K5). Fairy-Stockfish consumes `CountingRule`
+only in `is_optional_game_end() → VALUE_DRAW`; zero hits across `evaluate/search/material/endgame`. Makruk-Stockfish
+*scales* the win score by remaining count. **Scaling is the better shape than our additive `counting_term()`** — a won
+position should decay toward zero as the clock closes, not take a fixed offset. Neither engine has anything like the
+§A3 counting-gate finding, so §E1 stands as novel. Also: the ultimate count can start *below* the current count, an
+automatic draw — **in makruk more material can be strictly worse**, modelled by nobody.
+
+**And the KMITL fog patch now has a citable source** (§K6). Tudsuan & Thanatipanonda (2026), *"Building Makruk Endgame
+Tablebases"*: the 44-move pieces'-honour limit drops khon + promoted-bia vs bare khun from **85.77% to 83.49%**,
+eliminating 278,040 positions needing more than 41 moves, including mates up to 57 long.
+
+**Table movements:** PVS 12th → **2nd** (+56.2 Blunder, +54.2 Rustic, independently) — but it measured **−12.7 over
+4,311 games** under a buggy move scorer, so it is an ordering *amplifier*: **verify move ordering before measuring
+it.** Aspiration windows now cite CT800's **+18 over 10,000 games at a stated depth of 8–10**, depth-matched to this
+engine, rather than an ablation from a deeper one. New rows: SEE-gated check extension (7), met-pair bonus (16).
+
+### What this ticket hands forward
+
+This ticket blocks nothing. It informs [What is one classical-eval improvement actually worth?](05-what-one-eval-term-is-worth.md)
+and [What is one search improvement actually worth?](06-what-one-search-fix-is-worth.md), both of which now have prices
+to test rather than guesses to argue, and it graduated
+[Is the eval tuner a trustworthy instrument?](09-is-the-eval-tuner-trustworthy.md) out of the fog — the falsification
+test that decides whether the recommendation this ticket makes can be acted on at all.
