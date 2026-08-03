@@ -180,3 +180,29 @@ What remains, in order of what the evidence supports:
 - **Gate A at equal movetime has not been run.** On the nps evidence it is expected to fail — the net
   is 2 plies down where it was 3 — so it is left as an explicit decision rather than spent
   automatically.
+
+### Native SIMD: tried, refuted, and the inference that suggested it does not transfer
+
+The obvious next lever, and it is free to test: rustc gives **native x86-64 no `target-feature` at
+all**, so the baseline is SSE2 (4 f32 lanes, no FMA) on a CPU that has **AVX2 and FMA** (8 lanes,
+fused). That is structurally the same oversight the wasm build had, where `+simd128` was worth
+**+43.7%**.
+
+**It measured slower.** Three runs each, run-to-run spread ~0.5%:
+
+| | baseline | `+avx2,+fma` | |
+|---|---|---|---|
+| net | 383,743 | 375,761 | **−2.1%** |
+| classic | 699,039 | 681,758 | **−2.5%** |
+
+Consistently worse, for both evals, outside noise. **Reverted**, with the finding written into
+`.cargo/config.toml` next to the wasm flag so the inference is not made again.
+
+The likely reason is that these loops are **memory-bound rather than compute-bound**: the feature
+transformer streams 256-float rows out of a 786 KB weight table, so wider vectors wait on the same
+cache misses, and AVX2 costs a little clock on this part. It also explains the accumulator's own
+shortfall — removing cheap streaming adds while leaving expensive reductions behind.
+
+**Consequence: there is no free speed left.** The two levers that cost nothing (accumulator, native
+SIMD) are now measured at +9.8% and −2.1%. Everything remaining changes the network shape and needs
+retraining.

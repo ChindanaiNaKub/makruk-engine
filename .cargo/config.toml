@@ -7,3 +7,15 @@
 # Browser support: Chrome 91+, Firefox 89+, Safari 16.4+ — the site's floor.
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+simd128"]
+
+
+# NATIVE SIMD WAS TRIED AND REFUTED (redraw ticket 08, 2026-08-03). The wasm win
+# above makes the inference look obvious — rustc gives native x86-64 no
+# target-feature either, so the baseline is SSE2 on a CPU with AVX2+FMA — but
+# `-C target-feature=+avx2,+fma` measured SLOWER, three runs each with ~0.5%
+# spread: net 383,743 -> 375,761 (-2.1%), classic 699,039 -> 681,758 (-2.5%).
+#
+# The likely reason is that these loops are memory-bound, not compute-bound: the
+# feature transformer streams 256-float rows out of a 786 KB table, so wider
+# vectors wait on the same cache misses, and AVX2 costs a little frequency on
+# this part. Do not re-derive this from the wasm result; it does not transfer.
