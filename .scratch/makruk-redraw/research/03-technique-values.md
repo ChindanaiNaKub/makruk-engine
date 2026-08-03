@@ -34,39 +34,61 @@ previously, **[S]** structural — derived from reading this source, **[B]** bor
 
 | # | Technique | Elo | Hours | **Elo/h** | Ev. | Source of the Elo number | Makruk caveat |
 |---|---|---|---|---|---|---|---|
-| 1 | Reverse futility / static null-move pruning | +25 to +55 | 1 | **40** | **[B]** | **Blunder +57.1 ± 16.9 over 1,209 games**, SPRT accepted [1] | Must carry the counting guard, same as NMP — a passive position under a closing count is *losing on the clock*, not neutral (§S2) |
-| 2 | Futility pruning (frontier nodes) | +15 to +35 | 1 | **25** | **[B]** | **Blunder +37.4 ± 13.4 over 1,780 games**, SPRT accepted [1] | Same counting guard. Blunder measured it *after* static null-move, so the two are additive there, not redundant |
-| 3 | Delta pruning in quiescence | +0 to +25 | 0.5 | **25** | **[B]** | **Contested.** One TalkChess report +80 Elo (500 games) that its own author doubted; another found strength *decreased* [4] | **Danger, makruk-specific**: sources warn to disable it in late endgames for insufficient-material blindness — and makruk's *counting* endgames are that failure mode with a clock (§S5) |
-| 4 | **Counting-gate eval term** (unpromoted bia blocks counting) | +20 to +60 | 2 | **20** | **[M]** | **Measured here** (§A3) | Makruk-only. No chess literature exists or could. **30-point** swing at a 400–700 cp edge, piece count fixed |
-| 5 | **TT aging / generation counter** | +15 to +40 | 1.5 | **18** | **[R]** | This repo's 17.6 pts / 4.0σ (§S1). Nearest chess analogue: **Blunder's TT replacement bug fix, +30.0 ± 11.9 over 1,776 games** [1] | **Amplified by makruk**: mean game **203 plies**, 43.5% past 200 (n=1,460 ledger games) — ~2.5× chess. Also tripled the unconverted-game rate (§S1) |
-| 6 | Late move pruning (move-count) | +10 to +25 | 1 | **18** | **[B]** | **Blunder +21.9 ± 11.4 over 2,000 games** (LLR 2.22, did *not* reach the bound) [1] | Branching factor **22.8** vs chess's ~35 (§A1) — shorter tail to prune, so expect the low end; retune the count thresholds |
-| 7 | **Dead `PAWN_ADVANCE` slot + colour-blind king safety** | +0 to +15 | 0.5 | **15** | **[M]** | **Measured here** (§A4) | `PAWN_ADVANCE[5]=30` fired **0/40,000** — unreachable *because* promotion is at rank six |
-| 8 | Capture-only movegen for quiescence *(off-ticket)* | +20 to +50 | 3 | **12** | **[S]** | Structural (§S6), priced via **~66 Elo/ply** (Ferreira 2013, Houdini 2894@20ply → 1966@6ply, ~linear) [3] | Largest nps lever in the engine; qsearch generates all legal moves then discards ~90% |
-| 9 | **Texel-tune the existing eval constants** | +30 to +80 | 5 | **11** | **[M]** | Loss −4.08% held out, **measured here** (§A5). Chess anchor: **Blunder's eval re-tune = +34 Elo** in gauntlet [1] | None — the fit runs on makruk data. **The only row whose core evidence borrows nothing.** Our eval has *never* been tuned; Blunder's +34 was a *re*-tune |
-| 10 | Tempo | +0 to +5 | 0.25 | **10** | **[B]** | **Blunder +4.2 ± 9.0** (bundled with rook eval) — indistinguishable from zero [1] | Weakest row in the document. Fold it into the tuner as a free parameter rather than spending an hour on it (§E7) |
-| 11 | Aspiration windows | +10 to +25 | 2 | **9** | **[B]** | **Blunder +22.6 ± 11.8 over 2,000 games** (LLR 2.18, did *not* reach the bound) [1] | The depth discount bites hardest here — 8 iterations at movetime 100, not 25 (§S9) |
-| 12 | Principal variation search (PVS) | +5 to +20 | 1.5 | **8** | **[B]** | **No isolated measurement found** — PVS is "part of the starting basis" in Blunder [1] and bundled with killers in Rustic | Neutral. Already null-window on LMR re-searches, so the delta is small — the spec reached this independently |
-| 13 | Phase interpolation (tapered eval) | +10 to +30 | 3 | **7** | **[M]** | **Measured here**: 1.38% *further* loss beyond tuning (§A6). **No trustworthy chess figure found** — see §S/E5 note | Phase is **bimodal** here (28.2% >20 pieces, 48.6% ≤10). Bigger opening/endgame gap than chess |
-| 14 | **Mobility — rua only** | +5 to +20 | 2 | **6** | **[M]** | **Measured here** (§A2). Chess context: **Blunder +27.6 over 2,000 games** for basic mobility [1] | **Do not port per-piece mobility.** Only the rua carries signal (partial r **+0.123**); met/khon/ma are 0 to negative |
-| 15 | SEE for capture ordering + qsearch pruning | +10 to +26 | 4 | **5** | **[B]** | **Blunder +25.9 ± 12.8 over 2,000 games** for SEE pruning in qsearch [1] | **Cheaper to write in makruk** (one x-ray case: rua behind rua) but **less urgent** (MVV-LVA is less wrong on compressed values) |
-| 16 | Bia structure (doubled / connected / passed) | +0 to +10 | 2 | **3** | **[M]** | **Measured here** (§A2). Chess figures are much larger — Blunder passed pawns **+36.1 ± 13.2**, doubled/isolated **+33.4 ± 12.6** [1] — and **do not transfer** | Promotion yields a *met*, worth ~0–100 cp not +800 (§M3, §E6). This is the clearest case in the document of a chess number that would mislead |
+| 1 | Reverse futility / static null-move pruning | +25 to +55 | 1 | **40** | **[B]** | **Blunder +57.1 ± 16.9 / 1,209 games**, SPRT accepted [1]. Note: **no SPRT evidence on TalkChess** — rests on engine logs | Must carry the counting guard, same as NMP — a passive position under a closing count is *losing on the clock*, not neutral (§S2) |
+| 2 | **Principal variation search (PVS)** | +30 to +55 | 1.5 | **28** | **[B]** | **Two independent measurements: Blunder +56.2 ± 13.8, Rustic +54.2 ± 16.6** [2]. **But −12.7 ± 9.0 / 4,311 games with a move-scoring bug** — PVS is an ordering *amplifier* | Neutral to makruk. **Verify move ordering before measuring it** — same code measured −31 and +56 depending only on the move scorer |
+| 3 | Late move pruning (move-count) | +15 to +40 | 1 | **28** | **[B]** | **Blunder +21.9 ± 11.4 / 2,000** [1]; **Dumb 1.9 ablation `no_lmp` −43.9 ± 4.7 / ~11,000 games** [5] | Branching factor **22.8** vs chess's ~35 (§A1) — shorter tail to prune, so expect the low end; retune the count thresholds |
+| 4 | Futility pruning (frontier nodes) | +15 to +35 | 1 | **25** | **[B]** | **Blunder +37.4 ± 13.4 / 1,780 games**, SPRT accepted [1] | Same counting guard. Blunder measured it *after* static null-move, so the two were additive there, not redundant |
+| 5 | Delta pruning in quiescence | +0 to +25 | 0.5 | **25** | **[B]** | **Contested.** One TalkChess report +80 (500 games) its own author doubted; another found strength *decreased* [4] | **Danger, makruk-specific**: sources warn to disable it in late endgames for insufficient-material blindness — makruk's *counting* endgames are that failure mode with a clock (§S5) |
+| 6 | **Counting-gate eval term** (unpromoted bia blocks counting) | +20 to +60 | 2 | **20** | **[M]** | **Measured here** (§A3) | Makruk-only. No chess literature exists or could. **30-point** swing at a 400–700 cp edge, piece count fixed |
+| 7 | **Gate the existing check extension on SEE ≥ 0** | **+18** | 1 (+SEE) | **18** | **[K]** | **+18 Elo self-play, measured *in makruk*** by Evert Glebbeek [6] — replacing `if (in check) depth++` with `if (move gives check && see >= 0) extend` | **The only Elo number in this document measured on makruk by anyone but me**, and our `search.rs:271` is exactly the naive form he replaced. Needs SEE first |
+| 8 | **Dead `PAWN_ADVANCE` slot + colour-blind king safety** | +0 to +15 | 0.5 | **15** | **[M]** | **Measured here** (§A4) | `PAWN_ADVANCE[5]=30` fired **0/40,000** — unreachable *because* promotion is at rank six |
+| 9 | Capture-only movegen for quiescence *(off-ticket)* | +20 to +50 | 3 | **12** | **[S]** | Structural (§S6), priced via **~66 Elo/ply** (Ferreira 2013: Houdini 2894@20ply → 1966@6ply, ~linear) [3] | Largest nps lever in the engine; qsearch generates all legal moves then discards ~90% |
+| 10 | **Texel-tune the existing eval constants** | +40 to +120 | 5 | **16** | **[M]** | Loss −4.08% held out, **measured here** (§A5). First-ever tunings elsewhere: **Osterlund/Texel 99.6 over 32k games/term**, chess22k **+137**, chess4j **~120**, RofChade **+75–80**, Weiss **58.1 ± 4.5**, Blunder **60.9 ± 17.5** [9] | **Do not trust the piece values this fit produces** — see §K1. Tune the positional terms; seed a separate imbalance corpus for material |
+| 11 | SEE for capture ordering + qsearch pruning | +20 to +50 | 4 | **9** | **[B]** | **Blunder +25.9 ± 12.8 / 2,000** [1]; **Dumb `no_see` −51.3 ± 4.6 / ~11,000 games** [5] | **Cheaper to write in makruk** (one x-ray case: rua behind rua). Also the precondition for row 7 |
+| 12 | Aspiration windows | +10 to +25 | 2 | **9** | **[B]** | **CT800 +18 over 10,000 games at 10 s/game, author states "usual depth is 8–10 plies"** [7] — *depth-matched to this engine*. Dumb `no_aspiration` −69.9 ± 4.9 [5] is not | Use the +18, not the −70. §S9 |
+| 13 | Tempo | +0 to +5 | 0.25 | **10** | **[B]** | **Blunder +4.2 ± 9.0** (bundled with rook eval) — indistinguishable from zero [1] | Weakest row in the document. Fold it into the tuner as a free parameter rather than spending an hour on it (§E7) |
+| 14 | **TT aging / generation counter** | **+0 to +25** | 1.5 | **8** | **[R]** | This repo's 17.6 pts / 4.0σ (§S1). **Downgraded** — H.G. Muller's sizing rule says replacement policy cannot register unless the tree is ≥10× the table [8], and per *move* ours is 0.3× | **Rescued only by makruk's game length**: 203 plies × ~30k stores ≈ **11× the table per game**, which does clear the bar. Cross-move, not per-move (§S1) |
+| 15 | **Phase interpolation (tapered eval)** | +20 to +60 | 3 | **13** | **[M]** | **Measured here**: 1.38% *further* loss beyond tuning (§A6). Chess: **Rustic +248**, MadChess **+107**, PeSTO-into-TSCP **~+200** [10] — but **always bundled with the retune it requires** | Phase is **bimodal** here (28.2% >20 pieces, 48.6% ≤10). **Makruk-Stockfish's met *gains* 25% into the endgame** — opposite of chess, and opposite of my own fit (§K1) |
+| 16 | **Met-pair bonus** (makruk's bishop-pair analogue) | +0 to +15 | 1 | **8** | **[K]** | **Precedent, not a number**: Makruk-Stockfish ships `queen_pair()` in imbalance slot 1000 [11]. No isolated Elo published | Two mets cover both square colours; one met is colour-bound forever. Muller: colour-binding "is the main thing that makes the Ferz so useless" [12] |
+| 17 | **Mobility — rua curve + a 0/1-move penalty for everything else** | +5 to +20 | 2 | **6** | **[M]** | **Measured here** (§A2). Chess: Blunder **+27.6**, MadChess **+64**, Stash pin-aware **6.15 ± 4.50** [1][10] | **Do not port per-piece mobility.** For a 1-step mover mobility *is* a PST (§K2). Muller: "whether it has 0 or 2 moves makes a heck of a difference" [12] |
+| 18 | Bia structure (doubled / connected / passed) | +0 to +10 | 2 | **3** | **[M]** | **Measured here** (§A2). Chess figures are far larger — Blunder passed pawns **+36.1 ± 13.2**, MadChess **+72** [1][10] — and **do not transfer** | Promotion yields a *met*, worth ~0–100 cp not +800 (§M3, §E6). The clearest case in this document of a chess number that would mislead |
+
+Evidence classes: **[M]** measured here on makruk data · **[R]** measured previously in this repo · **[K]** measured by
+someone else **on makruk** · **[S]** structural, from reading this source · **[B]** borrowed from chess, unvalidated here.
+
+### Three things the literature changed after I first drafted this table
+
+1. **PVS went from "small delta" to +55, and the spec's reasoning was wrong.** `docs/strength-spec-v1.md:311` argues
+   PVS is a small delta *because* the LMR re-searches are already null-window. Two independent engines measured
+   ~+55 [2]. But the same source shows PVS measuring **−12.7 ± 9.0 over 4,311 games** when the move scorer had a bug —
+   it is an ordering amplifier, not a standalone gain. Our ordering (TT move, MVV-LVA, killers, history) is the
+   right shape, but nothing has ever verified it. **Verify ordering, then do PVS.**
+
+2. **TT aging fell from rank 3 to rank 14.** H.G. Muller: *"there isn't much replacement when the search tree is not
+   at least 10x larger than the table"* [8]. At 885k nps × 0.1 s ≈ 88k nodes/move against 262,144 slots, a single
+   move's tree is **0.3×** the table — replacement policy cannot matter within one search. Practitioners who measured
+   a gain had to shrink the hash to ~1 MB to find it. **What keeps this row alive at all is makruk's game length**
+   (§S1): ~30k stores/move × ~100 moves ≈ 3M stores into 262k slots ≈ **11×**, which is exactly Muller's threshold —
+   but reached across a game, not within a move. That is a narrower and less certain claim than the one I started with.
+
+3. **There is exactly one makruk Elo measurement in the entire literature, and it is about this engine's own code.**
+   Evert Glebbeek replaced a naive `if (in check) depth++` with `if (move gives check && see >= 0) extension = 1`
+   and gained **+18 Elo in self-play — in makruk** [6]. `src/search.rs:271` is the naive form, verbatim. Row 7.
 
 ### The ranking's own biggest weakness, stated plainly
 
-**The top three rows are all [B] — borrowed chess numbers I could not validate on makruk.** They rank first largely
-because their *denominators* are small (half an hour, one hour), not because their numerators are trustworthy.
-Elo-per-hour systematically rewards cheap techniques with unreliable Elo estimates, and this project's stated history
-is of being burned by numbers that measured something other than what they claimed.
+**Five of the top six rows are [B] — borrowed chess numbers.** They rank high partly because their *denominators* are
+small. Elo-per-hour systematically rewards cheap techniques whose numerators are least trustworthy, and this project's
+stated history is of being burned by numbers that measured something other than what they claimed.
 
 Read the table two ways:
 
-- **By Elo/h** (as the ticket asks): do delta pruning, RFP and LMP first. ~2.5 hours for a claimed +40 to +100.
-- **By Elo/h among rows measured on makruk data** ([M]/[R] only): counting-gate term (20), TT aging (18), dead-constant
-  cleanup (15), Texel tuning (13). ~9 hours for a claimed +75 to +205, none of it borrowed.
+- **By raw Elo/h** (as the ticket asks): RFP, PVS, LMP. ~3.5 hours for a claimed +70 to +150.
+- **By Elo/h among rows measured on makruk** ([M]/[R]/[K]): counting-gate term (20), check-extension gating (18),
+  dead-constant cleanup (15), Texel tuning (11), phase interpolation (7), rua mobility (6).
 
-**I recommend the second list, and within it I would start with Texel tuning even though it ranks fourth of the four.**
-Reasons in §"Which one I would do first" — the short version is that it is the only item that builds the instrument
-that prices the other three.
+**I would start with Texel tuning even though it ranks 10th.** Reasons in §"Which one I would do first" — the short
+version is that it is the only item that builds the instrument that prices most of the others.
 
 ### Two warnings about every number below
 
@@ -666,6 +688,150 @@ more free parameter and let the corpus price it** — that costs nothing once th
 
 ---
 
+## K. What the makruk-specific literature actually says
+
+There is more of it than the ticket assumed — and it validates one of my findings, contradicts another, and kills a
+third. All of it comes from reading engine source or published papers, not documentation.
+
+### K1. Published makruk piece values — the first external check on §A5
+
+Every source normalised to bia = 100. My §A5 Texel fit is the last row.
+
+| Source | met | khon | ma | rua |
+|---|---|---|---|---|
+| Fairy-Max, `fmax.ini` "Game: makruk" (Muller) [12] | 181 | 300 | 450 | 630 |
+| SjaakII `variants.txt` (Glebbeek) [13] | 187 | 344 | 406 | 625 |
+| Makruk-Stockfish, middlegame [11] | 159 | 312 | 412 | 676 |
+| Makruk-Stockfish, endgame [11] | 192 | 293 | 386 | 645 |
+| ChessV | 150 | 260 | — | — |
+| **`src/eval.rs` as shipped** (= the counting-rule table) | **200** | **250** | **300** | **500** |
+| **My §A5 Texel fit** | **112** | **226** | **284** | **652** |
+
+Four things fall out, and they matter more than any single number in this document:
+
+1. **The rua agrees almost exactly.** My 652 sits inside the published 625–676 band. That is a genuine external
+   validation of the fit on the one piece where the corpus has real signal (§A6: rua imbalances actually occur).
+2. **The shipped met value of 200 is higher than every published source.** The consensus band is 150–192, and Muller's
+   direct self-play measurement puts the shatranj ferz — geometrically the *same piece* — at **≈1.35 pawns** [12].
+   So the direction of my headline finding is confirmed by four independent sources: **the met is overvalued in
+   `eval.rs`.**
+3. **But my 112 is below every published value, and I now know why.** See K3 — this is a known Texel failure mode
+   and I walked into it.
+4. **The shipped table is not merely untuned, it is an outlier.** It is the *highest* met value and the *lowest* rua
+   value of any source in the table. That is what you get when a counting-rule adjudication table is pressed into
+   service as a playing-strength table (§M5).
+
+**One clean contradiction I cannot resolve.** Makruk-Stockfish's met **gains** 25% from middlegame to endgame
+(159 → 192); every other piece loses value. My §A6 phase fit says the opposite (met 168 opening → 80 endgame).
+A plausible reconciliation is that promoted bia become mets, so late-game mets are abundant and the *marginal* met is
+cheap — but I am guessing. **Treat my per-phase met values as unreliable and Makruk-Stockfish's as the prior.**
+
+### K2. Mobility for short-range pieces — the structural argument is stronger than my measurement
+
+My §A2 partial correlations said mobility is a rua-only term. The literature says the same thing far more decisively,
+by *absence*:
+
+| Engine / source | short-range mobility term? |
+|---|---|
+| Bonanza `evaluate.c` (shogi) | **zero occurrences of "mobilit"** — material + KKP + KPP only |
+| YaneuraOu, Apery (shogi) | **zero** |
+| Gikou (2016 WCSC runner-up) | control features for **Rook, Bishop, Lance only** — the three sliders. Gold/silver/knight/pawn get none |
+| Xiangqi consensus (Pham Hong Nguyen) | "Mobility. **Mainly for Rooks and Horses.**" Advisors and elephants get none |
+| Hoki & Kaneko, JAIR 49 (2014) [14] | **"mobilit" appears 0 times in the 42-page paper** |
+| Stockfish / MadChess | knight, bishop, rook, queen only |
+| **Fairy-Stockfish** [15] | met and khon are `Pt > QUEEN`, so they fall to an **untuned generic formula**, never a tuned table |
+
+And Stockfish's own tuned tables make the gradient explicit — the shortest-range piece with a real table has the
+smallest range: knight endgame mobility span **105 cp**, rook **257**, queen **270**.
+
+**The sharpest form of the argument, which I did not have and which supersedes mine:** for a one-step mover,
+mobility *is* a piece-square table. A met on d4 always has 4 pseudo-legal moves and on a1 always 2; the only variance
+is own-piece occupancy. **A met/khon mobility term is therefore largely redundant with the centre-bonus table that
+already exists** — a much stronger reason to skip it than "the correlation is small".
+
+**What to implement instead** (Muller [12]): *"it does not matter so much if your Rook has 10 or 12 moves. But
+whether it has 0 or 2 moves makes a heck of a difference."* So — a real mobility curve for the **rua**, and for
+everything else only a **low-tail penalty at 0 or 1 legal moves**. My §A1 histogram says that tail is real and rare:
+0.7% of khon and 0.7% of met are fully immobilised, 9.9% of mets have exactly one move.
+
+### K3. The Texel piece-value trap — I walked into it, and so has everyone else
+
+Primary source, hgm and jdart, *"Texel tuning for piece values"* [16]: **in a corpus drawn from ordinary games,
+material is almost always balanced, so there is nearly no signal to separate piece values**, and the fit collapses
+them toward whatever best fits the sigmoid on positional grounds. jdart stopped tuning piece values altogether;
+hgm's prescription is a **separate corpus generated by self-play from deliberately imbalanced starting positions**,
+with values fit only on that.
+
+I rediscovered this independently in §A6 without recognising it: *"the opening-phase rua value did not move from 500
+at all — in the opening both sides have two rua, the differential is almost always zero, and there is no gradient."*
+That is exactly the failure mode, observed in my own data.
+
+**Consequence for the recommendation — this is the single most important correction in this document.**
+**Split the tuning job in two:**
+
+- **Positional terms** (centre bonus, king safety, bia advance, tempo, and any new term) — tune them on
+  `bootstrap-v2` as described in §E2. This is where the measured −4.08% held-out loss actually lives, and it is
+  well-posed.
+- **Piece values** — do **not** ship the numbers my fit produced. Either leave them alone, or move them toward the
+  published makruk consensus in §K1 (met 150–190, khon 290–340, ma 390–450, rua 625–675), or generate an
+  imbalance-seeded corpus and fit them properly. `match-arena.mjs` can already dump games; seeding imbalanced
+  starts would be new work and should be its own costed ticket.
+
+**Makruk is a friendlier case than chess here, but not a free one.** 48.6% of corpus positions have ≤10 pieces
+(§A6), so material imbalances genuinely occur — far more than in a chess corpus. That is probably why my rua value
+landed on the published band. But the met, which is abundant and often traded evenly, is exactly the piece the
+method mis-fits, and it is the piece my fit moved furthest.
+
+### K4. Texel tuning has produced real regressions, and the loss number does not protect you
+
+Two engines measured a **loss** from tuning [9]:
+
+- **iCE (Petzke): −20 to −24 Elo.** Cause: the optimiser zeroed "smaller terms that contribute only small parts to
+  the score", because betting on a draw minimises MSE. He judged those terms worth "at least 20 Elo".
+- **Zurichess (Moșoi): −28 Elo *despite a lower MSE*** (0.0559 vs 0.0573) — `180–238–291 [0.459] 709`.
+
+**"Lower held-out loss" is exactly the evidence I have, and it is exactly the evidence that failed for Zurichess.**
+Petzke's failure mode is visible in my own §A5 output: the fit drove the entire king-safety table negative and the
+bia-advance terms to zero or below. Some of that is a real bug (the table is colour-blind, §E4); some of it may be
+the optimiser deleting small true terms. **Do not ship the fit unmeasured** — Gate A is two minutes and this is
+precisely what it is for.
+
+### K5. Counting rules in eval — there is a working precedent, and Fairy-Stockfish is not it
+
+- **Fairy-Stockfish treats counting as adjudication only.** `CountingRule` is consumed solely by
+  `is_optional_game_end()` → `VALUE_DRAW`; grepping `evaluate.cpp`, `search.cpp`, `material.cpp`, `endgame.cpp`
+  returns **zero hits** [15]. Its eval is blind to the counting clock until the position is already drawn. It also
+  sets `nMoveRule = 0`, so the usual shuffle damper is skipped too.
+- **Makruk-Stockfish — ianfab's dedicated fork — does have counting-aware eval**, from a commit titled *"Make KXK
+  drawish if counting is enabled"* [11]:
+
+  ```cpp
+  result = result * std::max(2 * pos.counting_limit() - pos.rule50_count(), 0) / 128;
+  ```
+
+  That is a *scaling* of the win score by remaining count — structurally the same idea as our `counting_term()`,
+  which adds a linear bonus instead. **Scaling is the better shape**: a won position should decay toward zero as the
+  clock closes, not receive a fixed offset that can swamp or be swamped by material.
+
+**Neither engine has anything resembling the §A3 counting-gate term.** The finding that an unpromoted bia *blocks
+counting from starting* appears nowhere in either codebase. §E1 stands as novel, and the Makruk-Stockfish scaling
+form is the right template for how to write it.
+
+**Also relevant, from the rules authority [17]:** *"it can happen that the ultimate count is already lower than the
+start count… In that case there is an automatic draw."* **In makruk, having more material can be strictly worse** —
+because the count starts at the piece count, and the limit is set by the stronger side's piece mix. That is a real
+eval non-monotonicity with no chess analogue whatsoever, and neither our eval nor either Stockfish models it.
+
+### K6. There is one published academic result on makruk endgames
+
+**Tudsuan & Thanatipanonda (2026), "Building Makruk Endgame Tablebases"** [18] quantifies exactly the effect §A3
+measures, from the other direction: for khon + promoted-bia versus a bare khun, the 44-move pieces'-honour limit
+(adjusted to 41 for four pieces) **drops the win ratio from 85.77% to 83.49%**, eliminating 278,040 positions that
+need more than 41 moves — including mates up to 57 moves long.
+
+This is the KMITL tablebase work the map lists as an unsharpened fog item. It is a real, citable, ground-truth source
+and it confirms that counting materially changes endgame outcomes.
+
 ## M. Makruk facts that drove the answers above
 
 Confirmed by reading `src/movegen.rs`, `src/board.rs`, `src/counting.rs` — not taken on faith:
@@ -723,19 +889,39 @@ the safest to revert, and a **multiplier on everything else** in the eval column
    one core at the scale I ran. Nothing here approaches the map's 20-minute lockout limit, and nothing needs a
    training ticket.
 
-6. **It ranks 8th by raw Elo/h and that is an artifact of the metric, not a verdict.** The seven rows above it are
-   cheap; five of them are borrowed chess numbers. Texel tuning has the largest *absolute* claimed gain in the table
-   and the only claim in the top half that was measured on makruk data. A ranking that puts a 15-minute tempo constant
-   above it is telling you about denominators, not about strength.
+6. **The chess literature backs the size.** First-ever tunings of previously hand-set evals measured **+58 to +137**
+   across six engines (§9 in Sources) — Osterlund's own 99.6, chess22k's 137, chess4j's ~120. Our eval has never been
+   tuned *and* currently scores below material-only, which is a worse starting point than any of theirs.
 
-**Then, in order: the counting-gate term (E1), TT aging (S1), the dead-constant/king-safety cleanup (A4/E4), and
-delta pruning in quiescence (S5).** That is roughly 9.5 hours covering every row measured on makruk data plus the
-single cheapest borrowed one — after which the tuner exists, so RFP/LMP/tempo can each be priced against held-out
-loss before any of them costs an arena block.
+7. **It ranks 10th by raw Elo/h, and that is an artifact of the metric.** Most rows above it are borrowed chess
+   numbers with small denominators. A ranking that puts a 15-minute tempo constant — worth `4.2 ± 9.0`, and *deleted
+   outright* by Stockfish in 2021 — above the largest measured effect in the table is telling you about denominators.
 
-**What I would *not* do early:** aspiration windows and PVS. Both are real, both are cheap, and both are the
-techniques whose published value most depends on search depth this engine does not have — and the spec already
-reached the same conclusion about PVS from a different direction.
+### But do it in the corrected form, not the form I first wrote
+
+**§K3 changed this recommendation and the change is not cosmetic.** Texel tuning cannot reliably fit *piece values*
+from a corpus where material is usually balanced [16], and my own §A6 output shows the symptom (the opening rua value
+had no gradient and did not move). So:
+
+- **Tune the positional constants** — centre bonus, king safety, bia advance, tempo, and any new term. This is
+  where the measured −4.08% held-out loss lives, and it is well-posed.
+- **Do not ship the piece values my fit produced.** Move them toward the published makruk consensus instead
+  (§K1: met 150–190, khon 290–340, ma 390–450, rua 625–675), which is four independent engines rather than one
+  under-determined fit. My rua landed in that band; my met did not.
+- **Measure it through Gate A regardless.** Two engines got a *loss* from tuning, one of them **with a lower MSE**
+  (§K4). Held-out loss is exactly the evidence that failed for Zurichess. Two minutes of arena settles it.
+
+**Then, in order: the counting-gate term (E1) with Makruk-Stockfish's scaling shape (§K5), gating the existing check
+extension on SEE ≥ 0 (the one makruk-measured +18, §K3/row 7 — needs SEE first), and the dead-constant/king-safety
+cleanup (A4/E4).**
+
+**What I would *not* do early, and what changed:** I originally wanted to defer PVS on the spec's reasoning that it
+is "a small delta" given the null-window LMR re-searches. **Two independent engines measured PVS at ~+55** [2], so
+that reasoning is wrong and PVS moves up — *conditional* on verifying move ordering first, because the same code
+measured **−31** with a buggy move scorer. **TT aging moves down**, from rank 3 to rank 14: Muller's sizing rule
+[8] says replacement policy cannot register when the per-move tree is 0.3× the table, and only makruk's 203-ply
+games keep the row alive at all (§S1). And **aspiration should be priced at CT800's depth-matched +18** [7], not at
+Dumb's −69.9 at an unstated time control.
 
 ---
 
@@ -763,20 +949,28 @@ document to argue with.
 | Mate scores stored TT-unadjusted; history never aged | **Verified in source** (`search.rs:372`, `search.rs:141`) |
 | qsearch generates all legal moves then filters | **Verified in source** (`search.rs:400`, `movegen.rs:203`) |
 | Only the rua slides; promotion at row 5; counting gated on unpromoted bia | **Verified in source** (`movegen.rs`, `board.rs:34`, `counting.rs:98`) |
-| RFP worth +20 to +50 | **BORROWED from chess self-play patches.** No makruk evidence. Shallow-depth technique, so the transfer is more credible than most |
-| LMP worth +15 to +35 | **BORROWED from chess.** Discounted downward for BF 22.8 vs 35 |
-| Delta pruning worth +10 to +25 | **BORROWED from chess**, and mostly asserted rather than isolated even there |
-| PVS worth +5 to +20 | **BORROWED from chess**, discounted for depth 8 |
-| Aspiration worth +5 to +20 | **BORROWED from chess**, discounted hardest for depth 8 / 8 iterations |
-| SEE worth +10 to +30 | **BORROWED from chess**, where it is usually measured at depth 15+ |
-| Tempo worth ~10–15 cp | **BORROWED and asserted**, not measured. Lowest-confidence row in the document |
-| Futility pruning worth +5 to +15 | **BORROWED**, and usually bundled with RFP in the sources, so hard to attribute |
-| TT aging is worth Elo *as an isolated patch* | **NOT MEASURED ANYWHERE I could find.** Chess sources treat it as hygiene. The number in the table is an inference from this repo's own 17.6-point proxy |
-| Texel tuning worth +40 to +90 Elo | **PART-MEASURED, PART-BORROWED.** The loss reduction is measured here; the *conversion from loss to Elo* is borrowed chess experience and is the weak link. Flagged in §E2 |
+| My tuned **rua** value (652) matches published makruk values (625–676) | **Cross-validated** against four independent makruk engines (§K1) — the one piece value I would trust |
+| My tuned **met** value (112) is below every published source (150–192) | **KNOWN FAILURE MODE.** Texel cannot separate piece values from balanced-material corpora [16] (§K3). Do not ship it |
+| Gating check extensions on SEE ≥ 0 is worth **+18** | **MEASURED BY SOMEONE ELSE, IN MAKRUK** (Evert Glebbeek [6]) — the only such number in existence. Self-play, no error bars, n not stated |
+| Met is overvalued at 200 in `eval.rs` | **Converging evidence**: four published makruk sources say 150–192, Muller's ferz self-play says ~135, my fit says 112. Direction certain, magnitude not |
+| RFP worth +25 to +55 | **BORROWED.** Blunder +57.1 ± 16.9 / 1,209 games [1]. No makruk evidence. Shallow-depth technique, so the transfer is more credible than most. **TalkChess has no SPRT evidence for RFP at all** — it rests on engine logs |
+| PVS worth +30 to +55 | **BORROWED**, but *two* independent measurements [2]. **Conditional on move ordering** — the same code measured −12.7 ± 9.0 over 4,311 games with a buggy move scorer |
+| LMP worth +15 to +40 | **BORROWED.** Blunder +21.9 ± 11.4 (LLR did not reach the bound); Dumb `no_lmp` −43.9 ± 4.7 at unknown TC [1][5]. Discounted for BF 22.8 vs 35 |
+| Futility pruning worth +15 to +35 | **BORROWED.** Blunder +37.4 ± 13.4, measured *after* RFP so genuinely additive there [1] |
+| Delta pruning worth +0 to +25 | **BORROWED AND CONTESTED** — one +80 its own author doubted, one strength *decrease* [4]. Plus a makruk-specific hazard (§S5) |
+| Aspiration worth +10 to +25 | **BORROWED**, but **depth-matched**: CT800's +18 over 10,000 games was measured at "usual depth 8–10 plies" [7]. Dumb's −69.9 is at unknown TC and should not be used here |
+| SEE worth +20 to +50 | **BORROWED.** Blunder +25.9 ± 12.8; Dumb `no_see` −51.3 ± 4.6 [1][5] |
+| Tempo worth +0 to +5 | **BORROWED and near-zero everywhere measured.** Blunder 4.2 ± 9.0 (bundled); **Stockfish removed tempo entirely in 2021 and it passed non-regression** [1][10] |
+| Tapered eval worth +20 to +60 | **PART-MEASURED HERE, PART-BORROWED.** The 1.38% is mine; the chess figures (+107 to +248) are **always bundled with the retune tapering requires**, so they are not a clean attribution [10] |
+| Mobility is a rua-only term | **Measured here AND structurally corroborated**: no shogi or xiangqi engine ships short-range mobility; Fairy-Stockfish leaves met/khon on an untuned formula (§K2) |
+| TT aging is worth Elo *as an isolated patch* | **NOT MEASURED ANYWHERE.** Confirmed in the canonical thread [19] — no participant reports a gain, one reports unclear benefit. **And Muller's sizing rule [8] says it cannot register at our nps × movetime.** Downgraded to rank 14 |
+| Texel tuning worth +40 to +120 Elo | **PART-MEASURED, PART-BORROWED.** The −4.08% held-out loss is measured here; the loss→Elo conversion is borrowed. **Two engines measured a *loss* from tuning, one of them with a lower MSE** (§K4) |
 
-**No makruk-specific engine-programming literature was used for any Elo figure in this document.** Every non-repo
-Elo number is a chess number. Where a chess number could not be responsibly adjusted, I have said so rather than
-adjusting it decoratively.
+**Correction to my own first draft: makruk-specific literature does exist, and this document now uses it.** Four
+engines publish makruk piece values (§K1); one engine has counting-aware eval (§K5); one author measured a check-
+extension change *in makruk* (§K3, row 7); and there is one published tablebase paper (§K6). My initial statement
+that no makruk evidence existed was wrong, and the piece-value cross-check it produced is the most useful thing in
+this document after §A3.
 
 ---
 
@@ -800,6 +994,96 @@ Stated so the next ticket does not re-discover them:
 5. **Whether the net already knows the counting gate.** The net carries ~10 counting side-channels and beats classic
    at equal depth (issue 02). If its edge is concentrated here, §E1 is the cheap way to buy it into the classical
    eval — and that is a corpus-side question the §A5 machinery can answer without an arena block.
+
+## Sources
+
+Numbered as cited in the table and body. Engine testing logs and source code are preferred over wiki prose
+throughout; where a number exists only as a forum recollection, it is marked.
+
+1. **Blunder engine testing log** (Christian Dean / algerbrex) — per-feature SPRT results with error bars and game
+   counts. The single best-structured primary source found.
+   https://github.com/deanmchris/blunder/blob/main/docs/testing.md
+2. **PVS measurements, Blunder + Rustic** — +56.2 ± 13.8 and +54.2 ± 16.6, and the −12.7 ± 9.0 / 4,311-game result
+   with a buggy move scorer. algerbrex, verbatim: *"When I copy and paste in my code for scoring moves, PVS becomes a
+   loss. When I replace my code with the code I copied from Rustic, PVS becomes a win again."* TalkChess.
+3. **Diogo R. Ferreira, "The Impact of the Search Depth on Chess Playing Strength", ICGA Journal 36(2), 2013** —
+   Houdini 1.5a: 2894 Elo at 20 ply, 1966 at 6 ply, approximately linear ⇒ **~66 Elo/ply**.
+   https://web.ist.utl.pt/diogo.ferreira/papers/ferreira13impact.pdf
+4. **Delta pruning test thread**, TalkChess — the +80/500-game report its own author doubted, and the contrary
+   report of a strength *decrease*; plus the warning to disable it in late endgames for insufficient-material
+   blindness. https://talkchess.com/viewtopic.php?t=73180
+5. **Richard Delorme, ablation of *Dumb* 1.9-dev** — ~11,000 games per row: `no_aspiration` −69.9 ± 4.9,
+   `no_see` −51.3 ± 4.6, `no_lmp` −43.9 ± 4.7, `no_razoring` −1.5 ± 4.7, `no_hash` −348.7, `hash_bmo` −210.0.
+   **Time control is not stated** — treat every row as TC-unknown.
+6. **Evert Glebbeek, "Is a Check Extension Really a Win?"** — *"it had a simple 'if (in check) depth++' style check
+   extensions, which I replaced with a more sensible 'if (move gives check and see>=0) extension=1'. It gained about
+   18 Elo in self-play. The game in question was not chess though (**it was Makruk**)."* Same thread: Hakkapeliitta
+   **+3, error (2,3), over 39,589 games** — the largest N found anywhere, and it is zero; Maverick measured **+33 for
+   removing** check extensions. Henk's mechanism: *"If LMR does not reduce when in check… that is your extension."*
+7. **CT800** — aspiration windows **+18 Elo over 10,000 games at 10 s/game**, author states *"usual depth is 8–10
+   plies"*. The only aspiration figure found at this engine's actual depth.
+8. **H.G. Muller on TT replacement sizing** — *"there isn't much replacement when the search tree is not at least 10x
+   larger than the table. So if you do 1-min games (~1 sec/move) and your engine does 1Mnps, you will only start to
+   see an effect when the hash table has fewer than 100K entries (i.e. < 1.6MB)."* Muller also recommends measuring
+   time-to-depth over a position set rather than playing games; lithander did exactly that — 300 WAC positions to
+   fixed depth 20 at 5 MB, **196 min → 136 min**.
+9. **Texel tuning results.** Peter Osterlund's original CCC post, 2014-01-31 — objective
+   `E = (1/N) Σ (R_i − σ(q_i))²`, `σ = 1/(1+10^(−K·q/400))`, **K = 1.13**, `q_i` = **quiescence-search score, not
+   static eval**, 64,000 games at 1s+0.08s → ~8.8M positions. His per-term gains total **99.6 Elo**, each measured
+   over 32,000 games. https://talkchess.com/viewtopic.php?t=50823&start=26
+   Other first-time tunings: chess22k **+137** (68.7% / 500 games), chess4j/Prophet **~120** (10k-game gauntlet),
+   RofChade **+75–80**, Weiss v1.1 **58.13 ± 4.49** STC, Blunder 8.0.0 **60.9 ± 17.5**.
+   **Regressions:** iCE **−20 to −24**; Zurichess **−28 despite a lower MSE** (0.0559 vs 0.0573).
+   Andrew Grant's refinements (sigmoid rebased to *e*, K ≈ 3.0; L1 loss *"tried with no success"*; and — contra
+   Osterlund — *"using a large number of positions from the same game has been shown to produce a lower quality
+   dataset"*): https://github.com/AndyGrant/Ethereal/blob/master/Tuning.pdf
+10. **Tapered eval and mobility figures.** Rustic **+248** self-play for tapered+tuned eval, with Vanthoor's
+    conversion note: *"As a rule of thumb… 60% of the rating improvement obtained in self-play will 'stick'…
+    A notable difference seems to be the tapered and tuned evaluation… the entire gain seems to carry over."*
+    MadChess: tapered **+107**, mobility **+64** (1694→1766), passed pawns **+72**, king safety **+63**.
+    PeSTO tables into TSCP **~+200**. Stash: pin-aware mobility **6.15 ± 4.50** / 10,623 games; connected pawns
+    **25.38 ± 10.40** STC → **18.57 ± 8.45** LTC.
+11. **Makruk-Stockfish** (ianfab) — counting-aware eval at `endgame.cpp:133` from the commit *"Make KXK drawish if
+    counting is enabled"*; met-pair bonus via `queen_pair()` in imbalance slot 1000; piece values in `src/types.h`
+    (`PawnValueMg 199/Eg 206`, met `316/396`, khon `620/604`, ma `820/796`, rua `1346/1328`).
+12. **H.G. Muller** — Fairy-Max `fmax.ini` makruk and shatranj piece values; self-play measurement *"Ferz ≈ 1.35
+    pawns"*; the short-range leaper formula *"1.1*(30 + 5/8*N)*N"*; *"forward moves seem to contribute twice as much
+    to value as backward or sideway moves"*; and on the khon vs met gap: *"The forward step furthermore breaks the
+    colour binding, which is the main thing that makes the Ferz so useless."* Also the mobility framing quoted in
+    §K2 — and his own disclaimer: *"I have never tried mobility evaluation, so none of what I am going to say is
+    substantiated by experiment."*
+13. **SjaakII** (Evert Glebbeek) `variants.txt` — makruk piece values.
+14. **Hoki & Kaneko, "Large-Scale Optimization for Evaluation Functions with Minimax Search", JAIR 49 (2014)
+    527–568** — the reference large-scale shogi eval-tuning paper. **The string "mobilit" appears zero times in
+    42 pages.** https://www.jair.org/index.php/jair/article/view/10871
+15. **Fairy-Stockfish source** — `variant.cpp:156` (makruk: promotion ranks 6-8, `promotionPieceTypes = MET`,
+    `doubleStep = false`, `nMoveRule = 0`, `countingRule = MAKRUK_COUNTING`); `types.h:409` where
+    **`MET = FERS` and `KHON = SILVER`**, so it structurally cannot value the makruk met differently from the
+    shatranj ferz; `evaluate.cpp:492-495` where every piece above QUEEN falls to an untuned generic mobility
+    formula; zero counting-rule references in any eval or search file.
+    https://github.com/fairy-stockfish/Fairy-Stockfish
+16. **"Texel tuning for piece values"**, hgm and jdart, TalkChess — the balanced-material failure mode and the
+    imbalance-seeded-corpus prescription. https://talkchess.com/forum3/viewtopic.php?t=69194
+17. **Hans Bodlaender, Thai chess rules** — ultimate counts 8/16/22/32/44/64; *"The count always starts at the total
+    number of pieces (including both Kings) on the board, plus one"*; and the non-monotonicity quoted in §K5.
+    https://www.chessvariants.com/oriental.dir/thai.html
+18. **Tudsuan & Thanatipanonda, "Building Makruk Endgame Tablebases", J. Science Ladkrabang 35(1), 2026, 112–129.**
+    DOI `10.55003/scikmitl.2026.270913`.
+19. **"Transposition Age Tutorial"**, TalkChess — Hyatt's replacement rule (*"If the table age is different from the
+    current age, overwrite immediately"*) and Evert's statement of the exact failure mode in `search.rs:214`:
+    *"the TT will fill up with stale deep entries that are never replaced."* **No participant reports a measured Elo
+    gain from aging**; D Sceviour reports empirical tests showing unclear benefit.
+    https://talkchess.com/viewtopic.php?t=59047
+
+**Two sourcing warnings for whoever re-runs this.** (a) `chessprogramming.org` returned HTTP 503/403 throughout;
+CPW content had to come via Wayback. (b) TalkChess's phpBB fulltext index **silently drops the token "elo"** as too
+common — it reports `ignored: elo`. Every "how much Elo is X worth" search anyone has run was really searching the
+*other* terms, date-ordered rather than relevance-ranked. Use `viewtopic.php?p=NNNNNN` permalinks directly.
+
+**And one warning about the sources themselves:** algerbrex recalled his own doubled/isolated and passed-pawn work
+as *"about 20 Elo… another 20 Elo… so overall 40-ish"*. His own SPRT log says 33.4 and 36.1 — roughly 70 combined,
+a ~40% understatement **by the person who ran the tests**. Prefer logged tables over forum recollection, including
+the author's own.
 
 ## Method note
 
