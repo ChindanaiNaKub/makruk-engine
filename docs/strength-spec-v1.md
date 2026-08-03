@@ -3,21 +3,107 @@
 **Status:** APPROVED 2026-08-01 (ticket [.scratch/makruk-strength/issues/10-write-the-spec.md](../.scratch/makruk-strength/issues/10-write-the-spec.md))
 **Provenance:** every decision below cites a resolved wayfinder ticket in `.scratch/makruk-strength/`. Research backing: `.scratch/makruk-strength/research/01..03`.
 
-This spec takes the engine from its current state (classical eval, 0–8 vs fairy skill 10 at 4× fairy handicap) to a distilled neural eval that beats fairy-stockfish at full strength, equal time, in the browser — within a ~0.5–1 MB weights budget.
+This spec was written to take the engine to a distilled neural eval that beats fairy-stockfish at full strength, equal time, in the browser. **§0 was rewritten on 2026-08-03 and no longer claims that.** The net trains, quantizes and runs exactly as §1–§4 specify, and its eval is measurably better at equal search depth — it is simply not fast enough to use at equal *time*. The strongest artifact this repo has is still the 5.1 KB classical eval. Read §0 first; the rest of the spec is the machinery, not the goal.
 
 ---
 
-## 0. Goal and success criteria (ticket 05)
+## 0. Goal and success criteria — **REWRITTEN 2026-08-03 (redraw map, ticket 07)**
 
-**Primary claim:** ≥50% score vs `fairy-stockfish-nnue.wasm` v1.1.11 (the artifact thatichess.dev ships today; classical eval, no net) at **skill 20, equal movetime 100 ms**, over **two independent 100-game blocks** (win = 1, counting-rule draw = 0.5), plus one 100-game confirmation at 500 ms so the claim isn't a bullet artifact.
+**Signed off by the user 2026-08-03.** Every number below cites a block id in `results/blocks.jsonl`;
+read it with `node scripts/results.mjs`, never from this prose.
 
-**Stretch claim:** score vs native Fairy-Stockfish 14 + official `makruk-a8c621e24a8c.nnue` (47.7 MB, +248 Elo over the primary bar) at equal time — reported separately, never conflated with the primary claim.
+> **Superseded:** ~~≥50% vs `fairy-stockfish-nnue.wasm` at **skill 20**, equal movetime 100 ms, over
+> two 100-game blocks.~~ That claim died twice. It had **no surviving evidence it was reachable**
+> (skill 10 and 20 both returned 0–64–0 for the net, so they were one gate and not two rungs), and the
+> vehicle it named — a distilled net — is not usable at equal time. Retained struck through because
+> the amendment history is the point.
 
-**Iteration gates (dev tier):** ~~16-game blocks against skill 10 → 15 → 20~~ — **amended 2026-08-02 (round 5), see §5.1.** The original rungs started seven levels above where the engine plays, so every round returned 0–16 regardless of merit. Replaced by a two-gate protocol (A/B against the incumbent for selection, a ladder block against fairy for advancement) walking **skill 3 → 5 → 8 → 10 → 15 → 20**. Nothing ships to the claim tier without passing every rung. (Moka discipline: gate the artifact, not the checkpoint file.)
+### 0.1 The target
 
-**Budget:** total shipped weights ≤ 1 MB raw (0.5 MB target); browser runtime ≤ current wasm size class; ≥ 500k nps in-browser after NNUE integration (from ~1.1M nps today).
+**The engine's measured ceiling is the target, because no demonstrated lever reaches past it.**
 
-**Hard invariants (unchanged, from AGENTS.md):** mirror-perft + `cargo test` green; `do_move`/`undo_move` perfectly symmetric; wire protocol untouched (uci/uciok/position/go/bestmove, `m` promotion suffix); wasm-bindgen 0.2.100; no game-level repetition adjudication; counting-rule adjudication order (pieces-honor before mate) untouched in search code.
+- **Stated position:** classic scores **39.8% vs fairy skill 5** at equal 100 ms (`b0055`, n=64,
+  ±7.9 pp) and **crosses 50% at about skill 4.4**, interpolating from 72.7% at skill 3 (`b0021`).
+- **Conditional goal:** **≥50% vs fairy skill 5, native, equal 100 ms.** It needs **+10.2 pp** and
+  **no measured lever produces any of it.** This goal unlocks *only* if a costed training ticket for a
+  smaller, faster net clears Gate A. Until then it is a goal, not a claim.
+
+**Stating an unconditional 50% would repeat exactly how the previous target died.** The rule this
+section now enforces: a target must name the lever that reaches it and the block that measured that
+lever.
+
+### 0.2 The ladder, measured (classic, the strongest artifact)
+
+| rung | score | block | | rung | score | block |
+|---|---|---|---|---|---|---|
+| skill 3 | 72.7% | `b0021` | | skill 8 | 23.4% | `b0056` |
+| skill 5 | **39.8%** | `b0055` | | skill 10 | 9.4% | `b0057` |
+
+Every rung above 3 had only ever been measured with the r3 **net** before 2026-08-03 — the weaker
+artifact. **Skill 10 is not the wall it appeared to be:** the net returned 0–64–0 there, classic
+scores 9.4% with 11 draws.
+
+### 0.3 The lever
+
+**Primary: a smaller, faster net.** It is the only untested lever left, and it is a **costed training
+ticket** under the standing rule — not covered by any map's cheap half.
+
+**Runner-up, and why it lost: classical-eval quality.** Its best tuner-ranked candidate — the counting
+multipliers, carrying more held-out loss than any other pair in the eval — measured **−9 Elo at Gate A**
+(`b0054`, LLR −3.21, REJECT, against a clean 50.0% control `b0053`). Held-out loss does not predict Elo
+on this engine; that is measured here, not borrowed.
+
+**Retired: search and depth.** Classic at 4× movetime reaches **depth 10 — full parity with fairy's
+search** — and the score does not move: 23.4% → **24.2%** at skill 8 (`b0062`), 9.4% → **5.5%** at
+skill 10 (`b0061`), both inside noise, **0 wins in 128 games at skill 10**. The exchange rate is
+**~0 pp/ply at both rungs**. This refutes the diagnosis that governed the program — *"the gap at the
+top of the ladder is ~5 plies"* — the gap is not ply-shaped. Three independent instances now agree:
+round 4's null-move + LMR (6–0 self-play, one extra draw vs skill 10), the accumulator (+1 ply, Gate A
+rejects), and this.
+
+**Search improvements move self-play and do not move the ladder.**
+
+### 0.4 Verdict on the net: KEPT, parked behind one costed training ticket
+
+**The net's eval is genuinely better — at equal depth.** 54.2% at depth 5 (`b0040`), **67.0% at depth
+7** (`b0043`, SPRT ACCEPT), 23–0 in decisive games across depths 6–7. The earlier refutation compared
+eval quality *plus eval speed* and attributed all of it to quality.
+
+**It is not usable at equal time.** It needs **2.07×** more nps; the incremental accumulator bought
+**+9.8%** and native AVX2+FMA measured **−2.1%** (refuted, reverted). Gate A at equal movetime:
+**38.8%, REJECT** (`b0058`, cleared by control `b0059`). `fc1` is now ~88% of per-node cost and its
+width is `L1 + 9`, so **a smaller L1 is the only lever with headroom** — a different network shape,
+hence retraining.
+
+**§1–§4 are not refuted and stand unchanged.** They describe a net that trains, quantizes, exports and
+runs exactly as specified. It is simply not fast enough to use the eval it has. `src/nnue.rs`, the
+`MAKURUK_EVAL=net|classic` switch and the corpora under `tools/data/` all stay.
+
+### 0.5 Native, not in-browser — and §7's gate is now a precondition
+
+**The target is stated natively.** Every measurement in this record is native; the previous §0 stated
+its claim on in-browser wasm while nothing had ever been measured there, which is part of how it broke.
+
+**§7's `nps ≥ 500k` browser gate has never been run, and no site-facing claim may be made until it
+has.** It is a precondition of the target's transfer, not a milestone inside it.
+
+### 0.6 What the site gets
+
+- **Casual** — anchored to the **classical eval**, which is what ships and is the strongest artifact.
+- **Club / Expert** — **promissory, and they stay that way.** §8's rung table pins them to gates no
+  artifact has passed. Do not name them on the site before Gate B says otherwise.
+
+### 0.7 Budget and invariants (unchanged)
+
+**Budget:** total shipped weights ≤ 1 MB raw (0.5 MB target); browser runtime ≤ current wasm size
+class; ≥ 500k nps in-browser after NNUE integration — see §0.5, this is now a precondition.
+
+**Hard invariants (from AGENTS.md):** mirror-perft + `cargo test` green; `do_move`/`undo_move`
+perfectly symmetric; wire protocol untouched (uci/uciok/position/go/bestmove, `m` promotion suffix);
+wasm-bindgen 0.2.100; no game-level repetition adjudication; counting-rule adjudication order
+(pieces-honor before mate) untouched in search code.
+
+**Gating protocol:** §5.1, amended twice on 2026-08-02.
 
 ## 1. Net definition (tickets 04, 08)
 
@@ -146,6 +232,37 @@ UCI wire protocol unchanged; the weights path is worker config — no `browserEn
 - **Counting-fidelity of teacher play:** fairy's makruk had rule bugs as late as 2020 (research/03); our oracle adjudicates outcomes, so teacher *moves* can be wrong in rare endgames but teacher *labels* are shaded toward fairy's view — accepted risk, softened by the 50% result-based target.
 
 ## Execution log
+
+**M5 — 2026-08-03: the wall is EVAL, not depth; the target is rewritten to the measured ceiling.**
+
+Nine tickets across two wayfinder maps closed in one day. §0 replaced (see above), signed off by the
+user. What changed and why:
+
+| finding | evidence |
+|---|---|
+| The strongest artifact finally has a ladder | classic 39.8% / 23.4% / 9.4% at skill 5 / 8 / 10 (`b0055`–`b0057`), crossing 50% at ~skill 4.4 |
+| **Depth is not the lever** | +2 plies to full parity with fairy: +0.8 pp at skill 8, −3.9 pp at skill 10, both inside noise, 0 wins in 128 games (`b0061`, `b0062`) |
+| **The net's eval is better at equal depth** | 54.2% at depth 5, 67.0% at depth 7, 23–0 decisive across 6–7 (`b0040`, `b0043`) |
+| **and unusable at equal time** | needs 2.07×; accumulator +9.8%, native AVX2+FMA −2.1%; Gate A 38.8% REJECT (`b0058`) |
+| **Held-out loss does not predict Elo here** | the eval tuner's best-ranked candidate measured −9 Elo at Gate A (`b0054`) — first-party, not borrowed from Zurichess |
+| Skill 10 was partly the *net's* wall | net 0–64–0 there; classic 9.4% with 11 draws |
+
+**The diagnosis this retires** — *"the gap at the top of the ladder is ~5 plies against an opponent
+whose eval is also mature"* — was an inference from a depth table, never a measurement. It is now
+measured and it is wrong. Three independent instances agree that **search improvements move self-play
+and do not move the ladder**: round 4's null-move + LMR (113× fewer nodes, 6–0 self-play, *one extra
+draw* vs skill 10), the incremental accumulator (+1 ply, Gate A rejects), and the 4× time test.
+
+**Two engine defects found while measuring, neither caused by the work:** `nnue::mode()` published
+`MODE_NET` before loading the weights, so a concurrent caller saw "net armed" with no net — a *silent*
+fallback to the classical eval; and the `cargo-test` gate inherited the arena's eval env, so gating a
+net pointed `tests/nnue_agreement.rs` at the wrong artifact and refused blocks for a defect that did
+not exist. Both fixed.
+
+**Also this day:** the ledger gained a **verified amendment** primitive (`.scratch/makruk-ledger/`) —
+five rows that recorded `movetime 100/400` for fixed-depth blocks now read their proven depths, each
+carrying a reproduction proof, with no row edited and none retracted. The audit went 15 contradictions
+to 4, and it caught a live clause-(a) defect on a brand-new row unprompted.
 
 **M4 — 2026-08-02: the classical eval BEATS the net. The NNUE program has no artifact that beats the baseline it set out to replace, and the belief that it did was an artifact of the dead transposition table.**
 

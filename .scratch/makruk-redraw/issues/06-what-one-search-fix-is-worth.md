@@ -1,7 +1,7 @@
 # What is one search improvement actually worth?
 
 Type: grilling → execution (HITL to choose, AFK to measure)
-Status: open
+Status: resolved (2026-08-03) — answered by ticket 04, nothing built
 Blocked by: 03, 04
 
 ## Question
@@ -25,3 +25,46 @@ Close when the change is in `src/search.rs` with `cargo test --release` + mirror
 **Correctness trap specific to this engine:** makruk zugzwang is real (bia move one square forward), the counting rules mean a null move must never tick the counting clock — `Game::do_null_move` deliberately leaves `counting` and `outcome` alone — and `do_move`/`undo_move` must stay perfectly symmetric. Any pruning or extension change must preserve all three. Mirror-perft is the guard; it is not optional.
 
 **Cost:** implementation is a session; measurement is ~2 min of arena plus a fixed-depth timing run. Nothing approaches the lockout limit.
+
+---
+
+## Resolution (2026-08-03) — answered by ticket 04, without building anything
+
+**This ticket's own item 3 decides it:** *"A search change that buys a ply where plies are worthless
+is a null result; say so plainly."*
+
+[Is the wall depth, or is it eval?](04-is-the-wall-depth-or-eval.md) measured exactly that, and the
+answer is **~0 pp/ply at both live rungs**. Classic at 4× movetime reaches **depth 10 — full parity
+with fairy's search** — and scores 24.2% at skill 8 (from 23.4%) and 5.5% at skill 10 (from 9.4%),
+both inside noise, with **0 wins in 128 games at skill 10**.
+
+**So the answer to "what is one search improvement worth?" is: ~0 on the ladder, whatever the change.**
+No individual technique needs building to establish it. A search change buys at most a ply or two; two
+plies were measured and bought nothing. Building one to confirm a null already measured would be
+spending the machine to re-derive a result in hand.
+
+**This is not a scope ruling — the question was in scope and it has a measured answer.** Recorded as
+resolved rather than out of scope for that reason.
+
+### What the research still recommends, if search is ever revisited
+
+Preserved because it is good work and the conclusion above is about *ladder* value, not correctness:
+
+- **SEE is a precondition, not a technique.** Glebbeek measured **+18 Elo in self-play, in makruk**,
+  for replacing `if (in check) depth++` with an SEE-gated extension — the only makruk-measured Elo
+  figure in the literature, and `src/search.rs:271` is that naive form verbatim. We have no SEE.
+  **But note what ticket 04 did to that number's meaning: it is a self-play measurement, and self-play
+  gains are exactly what this engine has three times now failed to convert into ladder movement.**
+- **PVS is an ordering amplifier**, ~+55 in two engines and **−12.7 over 4,311 games** under a buggy
+  move scorer. Verify move ordering before measuring it.
+- **Aspiration windows** carry the one depth-matched figure: CT800's **+18 over 10,000 games at a
+  stated depth of 8–10**, this engine's depth.
+- **TT aging is dead twice over** — Muller's sizing rule (our table is 3× the per-move tree) and the
+  research ranking it 14th of 18.
+
+### The pattern this closes on
+
+Round 4's null-move + LMR was **113× fewer nodes at depth 10** and 6–0–5 in self-play, for **one extra
+draw** against fairy skill 10. That was the warning, written down before any of this map's work.
+Ticket 04 turned it into a measurement, and the accumulator turned it into a third instance the same
+day. **Search improvements move self-play and do not move the ladder.**
