@@ -32,9 +32,21 @@
 
 import { readBlocks } from "./results.mjs";
 
-// Blocks that are records but not results. Diagnostics must not drag a control
-// block along behind them.
-const NOISE_KINDS = new Set(["smoke", "diag", "control"]);
+// WHAT THE TRIGGER MAY REASON OVER. Not the same question as "what counts as a
+// result" (`results.mjs`'s NOT_A_RESULT), even though ledger ticket 06 gave the
+// two sets identical members — which is exactly why they are still two sets.
+//
+// Here the exclusions are mechanical, not editorial:
+//   smoke/diag — too small or too incidental to sit on a trend line, and a
+//                diagnostic must not drag a control block along behind it.
+//   control    — a self-play block's expected score is 0.5 BY CONSTRUCTION, so
+//                pooling one into `rung()` poisons the trend it is being
+//                compared against. Excluded because it is not a MEASUREMENT of
+//                anything, not because a reader might misread it.
+//
+// Sharing the constant would make a future change to either question silently
+// change the other. If a kind is added to one, that should be a decision.
+const NOT_TREND_EVIDENCE = new Set(["smoke", "diag", "control"]);
 
 /// Per-game score standard deviation implied by a W/L/D split. Falls back to the
 /// binomial worst case only when the split was never recorded (backfilled rows).
@@ -67,9 +79,25 @@ export function fingerprint(b) {
     oppBinary: b.opponent?.binary ?? null,
     movetime: b.movetime ?? null,
     opponentMovetime: b.opponentMovetime ?? null,
+    // Fixed depth is a binding mechanism in the strongest sense — it changes
+    // what BOTH engines compute, and it removes eval speed from the comparison
+    // entirely. Without it here, a `--depth` block and a movetime block share a
+    // fingerprint, so clause (b) stays silent on a genuinely new mechanism and
+    // clause (a) compares two results that were never measuring the same thing.
+    // Found by redraw ticket 02, whose first block tripped (a) for that reason.
+    depth: b.depth ?? null,
     concurrency: b.concurrency ?? null,
     openingPlies: b.openingPlies ?? null,
     sprt: !!b.sprt,
+    // `engineId` is DELIBERATELY ABSENT, and this is the note for whoever
+    // notices and thinks it was forgotten (ledger ticket 03). It is the strongest
+    // identity the row carries, which is exactly why it does not belong here: the
+    // rule above is that a new ARTIFACT is a new experiment while new MACHINERY
+    // owes a control, and a rebuilt binary is the artifact. Every `cargo build`
+    // moves the hash, so including it would fire clause (b) on every rebuild and
+    // demand a 20-game control before every block — alarm fatigue on a check
+    // that exists to catch the rare real thing. The hash's job is to let a PROOF
+    // verify what it ran against, not to gate the next block.
   });
 }
 
@@ -90,8 +118,8 @@ const difficulty = (b) => (b.opponent?.engine === "fairy" ? b.opponent.skill : n
 /// `pending` is the block about to be played, in ledger-row shape (it does not
 /// need w/l/d — those do not exist yet).
 export function preChecks(pending, history = readBlocks()) {
-  if (NOISE_KINDS.has(pending.kind)) return [];
-  const results = history.filter((b) => !NOISE_KINDS.has(b.kind));
+  if (NOT_TREND_EVIDENCE.has(pending.kind)) return [];
+  const results = history.filter((b) => !NOT_TREND_EVIDENCE.has(b.kind));
   const fired = [];
 
   const fp = fingerprint(pending);
@@ -113,8 +141,8 @@ export function preChecks(pending, history = readBlocks()) {
 // ---------- postcondition: clause (a) ----------
 /// Two forms, both against the SE band computed from the actual splits.
 export function postChecks(row, history = readBlocks()) {
-  if (NOISE_KINDS.has(row.kind)) return [];
-  const results = history.filter((b) => !NOISE_KINDS.has(b.kind) && b.score != null);
+  if (NOT_TREND_EVIDENCE.has(row.kind)) return [];
+  const results = history.filter((b) => !NOT_TREND_EVIDENCE.has(b.kind) && b.score != null);
   const fired = [];
   const seRow = standardError(row);
 

@@ -65,6 +65,19 @@ const GATES = {
         env: { ...process.env, FAIRY_DIR: process.env.FAIRY_DIR || path.resolve(root, "..", "markrukthai-1", "node_modules") },
       }).status === 0,
   },
+  "ledger-audit": {
+    why: "no NEW row in the record contradicts itself (ledger ticket 04)",
+    // The ledger itself, the checks, and the baseline of already-accepted
+    // contradictions. Any of the three moving is a reason to re-run; none of
+    // them moving means the answer cannot have changed.
+    inputs: () => [
+      path.join(root, "results", "blocks.jsonl"),
+      path.join(root, "results", "audit-baseline.json"),
+      path.join(root, "scripts", "ledger-audit.mjs"),
+      path.join(root, "scripts", "lib", "block-schema.mjs"),
+    ],
+    run: () => spawnSync("node", ["scripts/ledger-audit.mjs", "--gate"], { cwd: root, stdio: "inherit" }).status === 0,
+  },
   "label-check": {
     why: "a new corpus's labels correlate with a reference eval at all",
     needsArg: "corpus.jsonl",

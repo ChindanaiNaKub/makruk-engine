@@ -21,6 +21,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mulberry32, openingSeed } from "./lib/rng.mjs";
+import { sidesIdentity } from "./lib/identity.mjs";
+import { validateBlock } from "./lib/block-schema.mjs";
 import { preflightOrDie } from "./preflight.mjs";
 import { ensureGatesOrDie } from "./gate.mjs";
 import { appendBlock, readBlocks } from "./results.mjs";
@@ -404,7 +406,13 @@ function runControlBlock() {
   const r = spawnSync(
     process.execPath,
     [fileURLToPath(import.meta.url), "--control", "--games", String(CONTROL_GAMES), "--kind", "control",
-     "--movetime", String(MOVETIME), "--fairytime", String(MOVETIME), "--seed", String(SEED)],
+     "--movetime", String(MOVETIME), "--fairytime", String(MOVETIME), "--seed", String(SEED),
+     // The control MUST run under the same search condition as the block it is
+     // vouching for. Without this it played `go movetime` while vouching for a
+     // `go depth` block — validating plumbing the block never used, which is
+     // strictly worse than no control at all because it reads as a pass.
+     // (redraw ticket 02: b0039 is such a control, fired for the depth-5 b0040.)
+     ...(DEPTH > 0 ? ["--depth", String(DEPTH)] : [])],
     { stdio: "inherit", env: { ...process.env, FAIRY_BIN: OUR_ENGINE, OPP_WEIGHTS: process.env.MAKURUK_WEIGHTS ?? "" } }
   );
   if (r.status !== 0) {
@@ -446,7 +454,11 @@ async function main() {
   if (args.includes("--skip-gates")) {
     console.warn("WARNING: --skip-gates — engine preconditions were NOT verified for this block.\n");
   } else {
-    ensureGatesOrDie([{ name: "cargo-test" }], { quiet: false });
+    // ledger-audit joins cargo-test here rather than at the end: a block that is
+    // about to append to a record already carrying a NEW contradiction should
+    // not run at all. Hash-gated like the rest, so it costs nothing when neither
+    // the ledger nor the checks have moved.
+    ensureGatesOrDie([{ name: "cargo-test" }, { name: "ledger-audit" }], { quiet: false });
   }
 
   // A block too small to resolve anything is filed as a smoke regardless of what
@@ -457,6 +469,15 @@ async function main() {
     GAMES < 8 && KIND_OVERRIDE !== "control"
       ? "smoke"
       : (KIND_OVERRIDE ?? (CONTROL ? "control" : oppIsOurs ? "gate-a" : "gate-b"));
+  // WHICH engine played, as opposed to which commit it came from. `engineCommit`
+  // names a tree state and almost every row is `engineDirty`, so a proof re-run
+  // against a historical row has nothing to check itself against. This is the
+  // field that fixes that, and it covers BOTH sides: the ladder is measured
+  // against fairy, so an unpinned opponent is the same defect one step out.
+  // Computed once and spread into both row-construction sites below (ledger
+  // ticket 03's Watch — a field added to one site and not the other IS the bug).
+  const engineIds = sidesIdentity({ ourEngine: OUR_ENGINE, oppIsOurs, fairyBin: FAIRY_BIN, fairyDir: FAIRY_DIR });
+
   // The block's identity, in ledger-row shape, known before a single game is
   // played. `armed` and the result fields are filled in at the end.
   const identity = {
@@ -465,16 +486,38 @@ async function main() {
       engine: "ours",
       eval: process.env.MAKURUK_EVAL === "net" ? "net" : "classic",
       weights: process.env.MAKURUK_WEIGHTS ? path.basename(process.env.MAKURUK_WEIGHTS) : null,
+      engineId: engineIds.mine,
     },
     opponent: oppIsOurs
-      ? { engine: "ours", eval: OPP_WEIGHTS ? "net" : "classic", weights: OPP_WEIGHTS ? path.basename(OPP_WEIGHTS) : null }
-      : { engine: "fairy", skill: FAIRY_SKILL, eval: FAIRY_EVAL ? "nnue" : "classical", binary: FAIRY_BIN ? "native" : "wasm" },
-    movetime: MOVETIME,
-    opponentMovetime: FAIRYTIME,
+      ? { engine: "ours", eval: OPP_WEIGHTS ? "net" : "classic", weights: OPP_WEIGHTS ? path.basename(OPP_WEIGHTS) : null, engineId: engineIds.opponent }
+      : { engine: "fairy", skill: FAIRY_SKILL, eval: FAIRY_EVAL ? "nnue" : "classical", binary: FAIRY_BIN ? "native" : "wasm", engineId: engineIds.opponent, weights: FAIRY_EVAL ? path.basename(FAIRY_EVAL) : null },
+    // Under --depth, goCmd ignores both movetime values entirely: BOTH engines
+    // get `go depth N`. Recording the ms figures anyway would be a lie in the
+    // ledger — and a flattering one, since a row reading "opponent 400 ms"
+    // makes our score look earned against a handicap that was never applied.
+    // Null them, and record the depth that actually governed the search.
+    // (redraw ticket 02: the first block ever run at fixed depth recorded
+    // neither, so the row was indistinguishable from a movetime block.)
+    depth: DEPTH > 0 ? DEPTH : null,
+    movetime: DEPTH > 0 ? null : MOVETIME,
+    opponentMovetime: DEPTH > 0 ? null : FAIRYTIME,
     openingPlies: OPENING_PLIES,
+    seed: SEED,
     concurrency: Math.max(1, Math.min(CONCURRENCY, GAMES_EFFECTIVE)),
     sprt: SPRT ? {} : null,
   };
+
+  // Everything knowable before a game is played is checkable before a game is
+  // played, and refusing here costs nothing (ledger ticket 04). The same schema
+  // runs again inside `appendBlock` for the rules that need a result — but by
+  // then a refusal costs the whole block, so the cheap door is this one.
+  const preViolations = validateBlock(identity, { phase: "pre" });
+  if (preViolations.length) {
+    console.error("\nFATAL [schema] this block would record a row that contradicts itself:");
+    for (const v of preViolations) console.error(`  [${v.name}] ${v.detail}`);
+    console.error("\nNothing played. Fix the rig, then re-run.");
+    process.exit(2);
+  }
 
   // ---- control-block trigger, clauses (b) and (c) (rig ticket 07) ----
   // Both are knowable before any game is played, so they run a control FIRST
@@ -575,7 +618,10 @@ async function main() {
         `${SPRT_OPTS.minPairs}–${SPRT_OPTS.maxPairs} pairs (${SPRT_OPTS.minPairs * 2}–${SPRT_OPTS.maxPairs * 2} games). --games is ignored.`
     );
   }
-  const slotCount = Math.max(1, Math.min(CONCURRENCY, GAMES_EFFECTIVE));
+  // Taken from `identity`, not recomputed. Same value either way today — which
+  // is exactly what the two row-construction sites looked like right up until
+  // they diverged.
+  const slotCount = identity.concurrency;
   console.log(`concurrency: ${slotCount} game${slotCount === 1 ? "" : "s"} at a time (${slotCount * 2} busy cores of ${os.cpus().length})\n`);
   const slots = [];
   for (let i = 0; i < slotCount; i++) {
@@ -787,28 +833,19 @@ async function main() {
     console.log(`  node scripts/results.mjs --clear-suspect <thisId> --control <controlId>`);
   }
 
+  // ONE CONSTRUCTION SITE (ledger ticket 04). This row is `identity` plus what
+  // could only be known once the games were played — it is no longer rebuilt
+  // from the same globals 340 lines later. That second derivation was the root
+  // cause the whole map traces back to: the two objects had already drifted
+  // apart once, which is why redraw ticket 02's first patch fixed one site and
+  // appeared to do nothing. `armed` joins here rather than above because it is
+  // read from the engine at startup, after `identity` is fixed.
   const row = appendBlock({
-    kind,
-    mine: {
-      engine: "ours",
-      eval: process.env.MAKURUK_EVAL === "net" ? "net" : "classic",
-      weights: process.env.MAKURUK_WEIGHTS ? path.basename(process.env.MAKURUK_WEIGHTS) : null,
-      armed: armedOf("mine"),
-    },
-    opponent: oppIsOurs
-      ? {
-          engine: "ours",
-          eval: OPP_WEIGHTS ? "net" : "classic",
-          weights: OPP_WEIGHTS ? path.basename(OPP_WEIGHTS) : null,
-          armed: armedOf("opponent"),
-        }
-      : { engine: "fairy", skill: FAIRY_SKILL, eval: FAIRY_EVAL ? "nnue" : "classical", binary: FAIRY_BIN ? "native" : "wasm" },
+    ...identity,
+    mine: { ...identity.mine, armed: armedOf("mine") },
+    opponent: oppIsOurs ? { ...identity.opponent, armed: armedOf("opponent") } : identity.opponent,
     ...(suspect.length ? { suspect } : {}),
     games: issued,
-    movetime: MOVETIME,
-    opponentMovetime: FAIRYTIME,
-    openingPlies: OPENING_PLIES,
-    seed: SEED,
     w: score.mineWins,
     l: score.fairyWins,
     d: score.draws,
@@ -821,7 +858,6 @@ async function main() {
       : SPRT
         ? { ...SPRT_OPTS, decision: "no-decision-at-exit", pairs: pairScores.length }
         : null,
-    concurrency: slotCount,
     wallClockS: Math.round(blockSecs),
     gameTimeS: Math.round(gameSecs),
     ...thermals.stop(),
