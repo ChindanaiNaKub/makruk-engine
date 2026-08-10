@@ -25,8 +25,18 @@ management, net architecture (HalfKA, a wider net), classical eval terms.
 
 ### Amendment, 2026-08-10 — slot 5 swapped before any lever ran
 
-Slot 5 was *classical eval terms*; it is now *counting-rule play*. The two flags left open
-at the goal's framing turned out to be the same flag.
+Slot 5 was *classical eval terms*; it is now *counting-rule play*, and *classical eval
+terms* takes the reserve slot counting-rule play vacated. **This is an exact inversion of
+the scope line as first written, and it was authorized by the user, not drifted into.**
+
+The goal as framed left two flags explicitly undecided — whether slot 5 deserved to exist
+given its weak prior, and whether counting-rule play belonged in reserve at all. Both were
+put back to the user with the alternatives costed (swap / keep as frozen / drop to four
+slots), and the user chose the swap before any lever ran. The frozen-list rule is not
+weakened by this: the list was frozen against *additions*, the count is unchanged at five,
+and the swap is recorded here rather than made silently.
+
+The two flags turned out to be the same flag.
 
 Levers 2, 3 and 4 are all **search** changes, and "the wall is search" is already a retired
 diagnosis — round 4's null-move + LMR went 6–0 in self-play and bought **one extra draw**
