@@ -62,3 +62,30 @@ n = 1,593 resolves **25 Elo between the endpoints at 80% power**. It does not re
 much lower confidence than the magnitude half. A non-monotone reading at this n is weak
 evidence and, per ADR 0002 clause 3, still ends the net program: ambiguous means stop.
 That asymmetry is deliberate and is the stop-bar working as written.
+
+---
+
+# The training budget is part of the measurement, not a detail
+
+**Added 2026-08-10 after the first three arms trained.** How long each arm trains changes
+what the curve measures, and there is no neutral default. This has to be decided before
+the arena spends 4.4 h, because the arena cannot detect the error afterwards.
+
+Three candidate designs, and what each one biases:
+
+| design | what it does | which way it biases the slope |
+|---|---|---|
+| **Equal epochs** | 10M arm gets 4× the gradient steps of the 2.5M arm | **Up.** The slope absorbs a training-compute effect and reads as a corpus effect — biased toward *authorizing* the 13-hour round. |
+| **Equal steps** | all arms get ~46,700 steps | **Down.** The big arm is starved: at 6 epochs the 10M arm's val loss was still falling steeply (0.1189 and dropping), while the 2.5M arm had flattened (0.0892 → 0.0868). Biased toward *killing* the corpus lever. |
+| **To convergence** | each arm trained until val loss stops improving, best-val checkpoint selected | **Neutral, and it is the question actually being asked** — what is the best artifact obtainable from N rows, not what is obtainable from N rows under an arbitrary step budget. |
+
+**Equal steps was run first and is discarded.** Its arms are kept on disk under
+`out/slope-*` but are not the curve; the curve is `out/slopeC-*`, trained to convergence
+with 40 / 32 / 24 epochs and `train.py`'s existing best-val checkpoint selection.
+
+**The equal-steps fit numbers must not be read as the curve, in either direction.** They
+run backwards — test acc 0.811 / 0.753 / 0.728 for 2.5M / 5M / 10M — which looks like a
+sensational refutation of the corpus lever and is nothing of the kind: it is the starvation
+artifact above. It is also **fit**, and fit is a probe-class diagnostic that this engine has
+already shown does not predict ladder position. The stop-bar is Elo on a Gate B block.
+Nothing about the corpus lever is decided until those blocks run.
