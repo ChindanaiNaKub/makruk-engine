@@ -21,9 +21,28 @@ const L2: usize = 32;
 const L3: usize = 32;
 
 pub struct TinyNnue {
-    table: Vec<f32>, // 768 * L1, dequantized at load
+    /// The feature transformer, left in its on-disk int8 form.
+    ///
+    /// Accumulator sums are therefore EXACT: a sum of at most 32 int8 values
+    /// (a makruk board holds at most 32 pieces) reaches 32*127 = 4,064, which
+    /// fits i16 with three bits to spare, and no rounding happens until the
+    /// single dequantize at read time. The old f32 table drifted instead —
+    /// `accumulator_matches_encode_through_do_and_undo` had to compare with a
+    /// 1e-3 tolerance because add-then-subtract does not round-trip in f32.
+    table_i8: Vec<i8>, // 768 * L1
+    /// Per-column dequantization scale, applied once when the accumulator is
+    /// read rather than 32 times while it is built.
+    col_scale: [f32; L1],
     ft_bias: [f32; L1],
     fc1_w: Vec<f32>, // L2 * (L1 + N_CHANNELS)
+    /// fc1's weights again, kept in their on-disk int8 form with the per-row
+    /// scale that dequantizes them. fc1 is 8,480 of the tail's 9,600 MACs, and
+    /// integer accumulation is associative — so unlike the f32 chain it packs
+    /// 8 lanes wide instead of 4, with no intrinsics and no unsafe. Only the
+    /// first L1 columns are stored: the 9 counting channels stay f32 because
+    /// their ranges differ per channel and 9 values are not worth a scale.
+    fc1_w_i8: Vec<i8>,   // L2 * L1
+    fc1_scale: [f32; L2], // per-row dequantization scale
     fc1_b: [f32; L2],
     fc2_w: Vec<f32>, // L3 * L2
     fc2_b: [f32; L3],
@@ -42,21 +61,40 @@ impl<'a> Cursor<'a> {
             self.p += 1;
         }
     }
-    fn int8_table(&mut self, rows: usize, cols: usize) -> Result<Vec<f32>, String> {
+    /// The feature transformer, kept raw. Returns (int8 weights, per-column
+    /// scales) — dequantization moves to read time so the accumulator can be
+    /// integer.
+    fn int8_table(&mut self, rows: usize, cols: usize) -> Result<(Vec<i8>, Vec<f32>), String> {
         self.align();
         let n = rows * cols;
-        let raw: &[i8] = bytemuck_i8(self.b, self.p, n)?;
+        let raw: Vec<i8> = bytemuck_i8(self.b, self.p, n)?.to_vec();
         self.p += n;
         self.align();
         let scales = self.f32s(cols)?; // per-output-channel (one scale per column)
-        let mut out = Vec::with_capacity(n);
-        for r in 0..rows {
-            for c in 0..cols {
-                out.push(raw[r * cols + c] as f32 * scales[c]);
-            }
-        }
-        Ok(out)
+        Ok((raw, scales))
     }
+    /// Like `int8_rows`, but also hands back the raw int8 weights and their
+    /// per-row scales so an integer forward pass can use them directly.
+    fn int8_rows_keep(
+        &mut self,
+        rows: usize,
+        cols: usize,
+    ) -> Result<(Vec<f32>, Vec<i8>, Vec<f32>), String> {
+        let start = self.p;
+        let deq = self.int8_rows(rows, cols)?;
+        let end = self.p;
+        // Re-read the same bytes rather than threading them out of int8_rows:
+        // the two paths must agree by construction, not by parallel edits.
+        let mut c = Cursor { b: self.b, p: start };
+        c.align();
+        let raw = bytemuck_i8(c.b, c.p, rows * cols)?.to_vec();
+        c.p += rows * cols;
+        c.align();
+        let scales = c.f32s(rows)?;
+        debug_assert_eq!(c.p, end);
+        Ok((deq, raw, scales))
+    }
+
     fn int8_rows(&mut self, rows: usize, cols: usize) -> Result<Vec<f32>, String> {
         self.align();
         let n = rows * cols;
@@ -105,10 +143,18 @@ impl TinyNnue {
     pub fn from_bytes(bytes: &[u8]) -> Result<TinyNnue, String> {
         let fc1_in = L1 + N_CHANNELS;
         let mut c = Cursor { b: bytes, p: 0 };
-        let table = c.int8_table(N_FEATURES, L1)?;
+        let (table_i8, col_scales) = c.int8_table(N_FEATURES, L1)?;
+        let col_scale = vec_to_arr::<L1>(col_scales)?;
         let ft_bias = vec_to_arr::<L1>(c.f32s(256)?)?;
-        let fc1_w = c.int8_rows(L2, fc1_in)?;
+        let (fc1_w, fc1_raw, fc1_scales) = c.int8_rows_keep(L2, fc1_in)?;
         let fc1_b = vec_to_arr::<L2>(c.f32s(L2)?)?;
+        // Keep only the L1 accumulator columns of each row; the 9 counting
+        // channels are evaluated in f32.
+        let mut fc1_w_i8 = Vec::with_capacity(L2 * L1);
+        for r in 0..L2 {
+            fc1_w_i8.extend_from_slice(&fc1_raw[r * fc1_in..r * fc1_in + L1]);
+        }
+        let fc1_scale = vec_to_arr::<L2>(fc1_scales)?;
         let fc2_w = c.int8_rows(L3, L2)?;
         let fc2_b = vec_to_arr::<L3>(c.f32s(L3)?)?;
         let out_w = c.int8_rows(3, L3)?;
@@ -116,28 +162,29 @@ impl TinyNnue {
         if !c.done() {
             return Err(format!("bin has {} trailing bytes", bytes.len() - c.p));
         }
-        Ok(TinyNnue { table, ft_bias, fc1_w, fc1_b, fc2_w, fc2_b, out_w, out_b })
+        Ok(TinyNnue { table_i8, col_scale, ft_bias, fc1_w, fc1_w_i8, fc1_scale, fc1_b, fc2_w, fc2_b, out_w, out_b })
     }
 
     /// WDL logits for a position encoded as (feature indices, side channels).
     /// zip-iterator loops elide bounds checks and auto-vectorize.
     pub fn wdl(&self, idxs: &[u32], ch: &[f32; N_CHANNELS]) -> [f32; 3] {
-        let mut acc = self.ft_bias;
+        let mut sums = [0i16; L1];
         for &i in idxs {
-            let row = &self.table[i as usize * L1..(i as usize + 1) * L1];
-            for (a, b) in acc.iter_mut().zip(row.iter()) {
-                *a += b;
+            let row = &self.table_i8[i as usize * L1..(i as usize + 1) * L1];
+            for (a, b) in sums.iter_mut().zip(row.iter()) {
+                *a += *b as i16;
             }
         }
-        self.wdl_from_acc(acc, ch)
+        self.wdl_acc(&sums, ch)
     }
 
     /// The tail, starting from summed feature columns. `sums` excludes
-    /// `ft_bias` — an incremental accumulator never has to track it.
-    pub fn wdl_acc(&self, sums: &[f32; L1], ch: &[f32; N_CHANNELS]) -> [f32; 3] {
+    /// `ft_bias` — an incremental accumulator never has to track it — and is
+    /// in raw int8 units, so this is where the per-column scale is applied.
+    pub fn wdl_acc(&self, sums: &[i16; L1], ch: &[f32; N_CHANNELS]) -> [f32; 3] {
         let mut acc = self.ft_bias;
-        for (a, b) in acc.iter_mut().zip(sums.iter()) {
-            *a += b;
+        for ((a, s), sc) in acc.iter_mut().zip(sums.iter()).zip(self.col_scale.iter()) {
+            *a += *s as f32 * *sc;
         }
         self.wdl_from_acc(acc, ch)
     }
@@ -171,6 +218,22 @@ impl TinyNnue {
         s
     }
 
+    /// The same shape as `dot`, in integers.
+    ///
+    /// This is where the win is. i32 addition IS associative, so the compiler
+    /// may reorder freely and pack 8 i16 lanes per 128-bit register against
+    /// f32's 4 — twice the work per instruction, from portable safe code with
+    /// no intrinsics. Products are at most 127*1024, and 256 of them reach 33M,
+    /// well inside i32, so no saturation handling is needed.
+    #[inline]
+    fn dot_i8(w: &[i8], x: &[i16]) -> i32 {
+        let mut s = 0i32;
+        for (a, b) in w.iter().zip(x.iter()) {
+            s += *a as i32 * *b as i32;
+        }
+        s
+    }
+
     fn wdl_from_acc(&self, mut acc: [f32; L1], ch: &[f32; N_CHANNELS]) -> [f32; 3] {
         // The feature transformer's activation. Both callers must go through
         // here — dropping it silently shifted the eval by ~130 cp while every
@@ -178,15 +241,31 @@ impl TinyNnue {
         for a in acc.iter_mut() {
             *a = a.clamp(0.0, 1.0);
         }
-        let mut x = [0f32; L1 + N_CHANNELS];
-        x[..L1].copy_from_slice(&acc);
-        x[L1..].copy_from_slice(ch);
+        // fc1's accumulator half runs in integers. The FT activation above has
+        // already clamped `acc` to [0, 1], so a fixed scale needs no calibration
+        // and is exact at both ends of the range.
+        //
+        // The scale is 1024, not 127. Quantizing activations to u8 costs a
+        // 1/127 step, and 256 of those errors accumulate to ~2e-3 of a logit —
+        // which is not visibly worse play, but it broke the python-parity
+        // fixture's 2e-3 tolerance, and a tolerance widened to admit a
+        // deliberate approximation stops guarding against real bugs. i16 at
+        // 1024 cuts the step 8x. Products reach 127*1024 and 256 of them reach
+        // 33M, so i32 accumulation still cannot overflow, and the layer still
+        // packs 8 lanes per 128-bit register against f32's 4.
+        let mut xq = [0i16; L1];
+        for (q, a) in xq.iter_mut().zip(acc.iter()) {
+            *q = (*a * 1024.0 + 0.5) as i16;
+        }
 
         // NOTE: trained order is relu(W·x) + b (model.py) — bias after activation.
         let mut h1 = [0f32; L2];
         for j in 0..L2 {
             let wrow = &self.fc1_w[j * (L1 + N_CHANNELS)..(j + 1) * (L1 + N_CHANNELS)];
-            let s = Self::dot(wrow, &x);
+            let acc_part =
+                Self::dot_i8(&self.fc1_w_i8[j * L1..(j + 1) * L1], &xq) as f32 * self.fc1_scale[j] / 1024.0;
+            let ch_part = Self::dot(&wrow[L1..], ch);
+            let s = acc_part + ch_part;
             h1[j] = s.max(0.0) + self.fc1_b[j];
         }
         let mut h2 = [0f32; L3];
@@ -205,7 +284,7 @@ impl TinyNnue {
     }
 
     /// Scalar eval in centipawn-class units (spec §1: (W - L) * 1000).
-    pub fn eval_cp_acc(&self, sums: &[f32; L1], ch: &[f32; N_CHANNELS]) -> i32 {
+    pub fn eval_cp_acc(&self, sums: &[i16; L1], ch: &[f32; N_CHANNELS]) -> i32 {
         Self::cp_from_logits(self.wdl_acc(sums, ch))
     }
 
@@ -281,7 +360,7 @@ pub fn encode_into(game: &Game, idxs: &mut [u32; MAX_FEATURES]) -> (usize, [f32;
 /// about it.
 #[derive(Clone)]
 pub struct Accumulator {
-    pub v: [[f32; L1]; 2],
+    pub v: [[i16; L1]; 2],
 }
 
 pub fn kind_index(kind: Kind) -> usize {
@@ -311,23 +390,27 @@ fn feat(persp: usize, sq: usize, kind_i: usize, color: Color) -> usize {
 
 impl Accumulator {
     pub fn zeroed() -> Accumulator {
-        Accumulator { v: [[0.0; L1]; 2] }
+        Accumulator { v: [[0; L1]; 2] }
     }
 
-    /// Add (`sign` = +1.0) or remove (-1.0) one piece, in both views.
+    /// Add (`add` = true) or remove one piece, in both views.
+    ///
+    /// i16 rather than f32, and that is a correctness change as well as a speed
+    /// one: these adds and subtracts must round-trip exactly through do_move /
+    /// undo_move, which f32 does not guarantee.
     #[inline]
-    fn edit(&mut self, table: &[f32], sq: usize, kind_i: usize, color: Color, sign: f32) {
+    fn edit(&mut self, table: &[i8], sq: usize, kind_i: usize, color: Color, add: bool) {
         for persp in 0..2 {
             let f = feat(persp, sq, kind_i, color);
             let row = &table[f * L1..(f + 1) * L1];
             let acc = &mut self.v[persp];
-            if sign > 0.0 {
+            if add {
                 for (a, b) in acc.iter_mut().zip(row.iter()) {
-                    *a += b;
+                    *a += *b as i16;
                 }
             } else {
                 for (a, b) in acc.iter_mut().zip(row.iter()) {
-                    *a -= b;
+                    *a -= *b as i16;
                 }
             }
         }
@@ -355,7 +438,7 @@ pub fn acc_apply(acc: &mut Accumulator, edits: &[AccEdit]) {
         None => return,
     };
     for &(sq, kind, color, add) in edits {
-        acc.edit(&net.table, sq, kind_index(kind), color, if add { 1.0 } else { -1.0 });
+        acc.edit(&net.table_i8, sq, kind_index(kind), color, add);
     }
 }
 
@@ -367,7 +450,7 @@ pub fn fresh_accumulator(game: &Game) -> Option<Accumulator> {
     let mut a = Accumulator::zeroed();
     for (idx, cell) in game.board.squares.iter().enumerate() {
         if let Some(p) = cell {
-            a.edit(&net.table, idx, kind_index(p.kind), p.color, 1.0);
+            a.edit(&net.table_i8, idx, kind_index(p.kind), p.color, true);
         }
     }
     Some(a)
@@ -545,8 +628,12 @@ mod tests {
             let got = g.nnue_acc.as_deref().expect("maintained");
             for persp in 0..2 {
                 for i in 0..L1 {
+                    // EXACT now, not within 1e-3. The accumulator is i16, so
+                    // add-then-subtract round-trips perfectly; any tolerance
+                    // here would be hiding a real bug rather than absorbing
+                    // float noise.
                     assert!(
-                        (want.v[persp][i] - got.v[persp][i]).abs() < 1e-3,
+                        want.v[persp][i] == got.v[persp][i],
                         "{when}: perspective {persp} channel {i} drifted: maintained {} vs rebuilt {}",
                         got.v[persp][i], want.v[persp][i]
                     );
