@@ -142,6 +142,35 @@ impl TinyNnue {
         self.wdl_from_acc(acc, ch)
     }
 
+    /// Dot product over EIGHT independent partial sums.
+    ///
+    /// The obvious `.map(|(w, v)| w * v).sum()` is a single running f32
+    /// accumulator, and f32 addition is not associative, so the compiler is
+    /// forbidden from reordering it — the whole 8,480-MAC fc1 layer ran
+    /// strictly serially at one multiply-add per cycle. Splitting the chain
+    /// into 8 lanes lets the vectorizer pack them, because each lane's adds
+    /// stay in their original order.
+    ///
+    /// This changes summation order, so results move in the last f32 ulp or
+    /// two. That is why `tests/nnue_agreement.rs` compares with a tolerance
+    /// rather than exactly.
+    #[inline]
+    fn dot(w: &[f32], x: &[f32]) -> f32 {
+        let mut p = [0f32; 8];
+        let n = w.len().min(x.len());
+        let full = n - n % 8;
+        for (wc, xc) in w[..full].chunks_exact(8).zip(x[..full].chunks_exact(8)) {
+            for k in 0..8 {
+                p[k] += wc[k] * xc[k];
+            }
+        }
+        let mut s = ((p[0] + p[1]) + (p[2] + p[3])) + ((p[4] + p[5]) + (p[6] + p[7]));
+        for i in full..n {
+            s += w[i] * x[i];
+        }
+        s
+    }
+
     fn wdl_from_acc(&self, mut acc: [f32; L1], ch: &[f32; N_CHANNELS]) -> [f32; 3] {
         // The feature transformer's activation. Both callers must go through
         // here — dropping it silently shifted the eval by ~130 cp while every
@@ -157,19 +186,19 @@ impl TinyNnue {
         let mut h1 = [0f32; L2];
         for j in 0..L2 {
             let wrow = &self.fc1_w[j * (L1 + N_CHANNELS)..(j + 1) * (L1 + N_CHANNELS)];
-            let s: f32 = wrow.iter().zip(x.iter()).map(|(w, v)| w * v).sum();
+            let s = Self::dot(wrow, &x);
             h1[j] = s.max(0.0) + self.fc1_b[j];
         }
         let mut h2 = [0f32; L3];
         for j in 0..L3 {
             let wrow = &self.fc2_w[j * L2..(j + 1) * L2];
-            let s: f32 = wrow.iter().zip(h1.iter()).map(|(w, v)| w * v).sum();
+            let s = Self::dot(wrow, &h1);
             h2[j] = s.max(0.0) + self.fc2_b[j];
         }
         let mut logits = [0f32; 3];
         for o in 0..3 {
             let wrow = &self.out_w[o * L3..(o + 1) * L3];
-            let s: f32 = wrow.iter().zip(h2.iter()).map(|(w, v)| w * v).sum();
+            let s = Self::dot(wrow, &h2);
             logits[o] = s + self.out_b[o];
         }
         logits
