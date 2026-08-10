@@ -17,6 +17,18 @@ Nothing is lost. Deadline for the whole frozen list is **2026-09-10** (ADR 0003)
 | Arm 3 (10M) | **not started** |
 | Three Gate B blocks | not started — 4.4 h arena, user schedules |
 
+## Open item to settle first, before arm 2 runs
+
+**The committed frozen list is not the list the goal was signed off with.** As written, the
+goal had slot 5 = *classical eval terms* and counting-rule play explicitly in reserve. ADR
+0003 as committed has those inverted. The swap was put to the user with costed
+alternatives and the user chose it — it is authorized, not drift — but it is an inversion
+of the original scope line and it happened after sign-off.
+
+Re-confirm it in one line at the start of the next session. It costs nothing now and is
+expensive later: once lever 1's first block lands, ADR 0003 forbids amendment of any kind,
+and a list nobody quite agreed to would then be frozen for the rest of the round.
+
 ## Restart command
 
 Arm 1 is finished. Run only arms 2 and 3 (~1.1 h GPU, machine stays usable):
