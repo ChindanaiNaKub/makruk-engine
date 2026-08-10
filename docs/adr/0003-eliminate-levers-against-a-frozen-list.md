@@ -15,13 +15,34 @@ crossover skill is an aspiration, explicitly not a commitment.
 2. LMR
 3. Aspiration windows + iterative-deepening reuse
 4. SEE ordering in quiescence
-5. Classical eval terms
+5. Counting-rule play *(amended 2026-08-10, before any lever ran — see below)*
 
 **Bound: 2026-09-10.** A lever not reached by that date is **killed unrun**. Not deferred,
 not carried into a next round — killed, and recorded as killed.
 
-**Scope.** Net, search, classical eval. Explicitly **out, held in reserve**: counting-rule
-play, time management, net architecture (HalfKA, a wider net).
+**Scope.** Net, search, counting-rule play. Explicitly **out, held in reserve**: time
+management, net architecture (HalfKA, a wider net), classical eval terms.
+
+### Amendment, 2026-08-10 — slot 5 swapped before any lever ran
+
+Slot 5 was *classical eval terms*; it is now *counting-rule play*. The two flags left open
+at the goal's framing turned out to be the same flag.
+
+Levers 2, 3 and 4 are all **search** changes, and "the wall is search" is already a retired
+diagnosis — round 4's null-move + LMR went 6–0 in self-play and bought **one extra draw**
+on the ladder. So four of five slots sat inside a family the record has killed. That is a
+weak list: if it comes back empty, it will be hard to tell a real null result from a list
+that never left the exhausted neighbourhood.
+
+Counting-rule play is the one candidate outside that family. It is where a chess-derived
+engine most plausibly bleeds on makruk, it has **never been measured**, and the ladder
+blocks are full of the symptom — `b0055` is 35 draws in 62 games, and the engine aborts
+~25% of self-play games on the ply cap while fairy converts. Whether those draws are
+positions we failed to win is exactly the untested question.
+
+**This amendment is legitimate only because it is pre-execution.** No lever has run and no
+number exists. Once lever 1's first block lands, the list is frozen against amendment of
+any kind, including this kind.
 
 **Vocabulary.** An artifact is now **(eval, engineId)** — see CONTEXT.md. Levers 2–4 are
 search changes, so each **mints a new artifact**, and each gets its own ladder block
@@ -77,15 +98,13 @@ different lever" is the move that has to be forbidden by name.
   the program has failed to move four times, and it licenses escalation when the number
   does not move. The retired-hypothesis framing cannot fail to produce output.
 - **Adding levers as they surface.** The whole mechanism. An open list has no end state.
-- **Counting-rule play in scope.** It is the most plausible place a chess-derived engine
-  bleeds on makruk, and it is still in reserve — a **flagged** inconsistency, not an
-  oversight. It is out because it is not a lever on the *search/eval* diagnosis this round
-  is testing, and mixing it in would make a failure of the failure clause unreadable.
-- **Dropping lever 5 (classical eval terms).** Genuinely arguable: it has a weak prior
-  *and* a known failure mode — the tuner's best-ranked candidate measured **−9 Elo** at
-  Gate A (`b0054`), and held-out loss is already shown not to predict Elo here. Kept in
-  the fifth and last slot, where the date will most likely kill it unrun. That is an
-  acceptable way for it to die.
+- **Classical eval terms as a lever.** Held in reserve. Weak prior *and* a known failure
+  mode: the tuner's best-ranked candidate measured **−9 Elo** at Gate A (`b0054`), and
+  held-out loss is already shown not to predict Elo on this engine. It lost its slot to
+  counting-rule play in the amendment above.
+- **Dropping slot 5 entirely, running a list of four.** Considered. Rejected because it
+  would leave every remaining lever inside the search family, which is the specific
+  weakness the amendment exists to fix.
 
 ## Consequences
 
