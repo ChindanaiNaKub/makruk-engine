@@ -15,34 +15,31 @@ crossover skill is an aspiration, explicitly not a commitment.
 2. LMR
 3. Aspiration windows + iterative-deepening reuse
 4. SEE ordering in quiescence
-5. Counting-rule play *(amended 2026-08-10, before any lever ran — see below)*
+5. Classical eval terms
 
 **Bound: 2026-09-10.** A lever not reached by that date is **killed unrun**. Not deferred,
 not carried into a next round — killed, and recorded as killed.
 
-**Scope.** Net, search, counting-rule play. Explicitly **out, held in reserve**: time
-management, net architecture (HalfKA, a wider net), classical eval terms.
+**Scope.** Net, search, classical eval. Explicitly **out, held in reserve**: counting-rule
+play, time management, net architecture (HalfKA, a wider net).
 
-### Amendment, 2026-08-10 — slot 5 swapped before any lever ran
+### Open proposal, not adopted — swap slot 5 for counting-rule play
 
-Slot 5 was *classical eval terms*; it is now *counting-rule play*, and *classical eval
-terms* takes the reserve slot counting-rule play vacated. **This is an exact inversion of
-the scope line as first written, and it was authorized by the user, not drifted into.**
+Recorded 2026-08-10. **The list above is the list as signed off, and it is what binds.**
+This section is a proposal awaiting confirmation; it has not been applied.
 
-The goal as framed left two flags explicitly undecided — whether slot 5 deserved to exist
-given its weak prior, and whether counting-rule play belonged in reserve at all. Both were
-put back to the user with the alternatives costed (swap / keep as frozen / drop to four
-slots), and the user chose the swap before any lever ran. The frozen-list rule is not
-weakened by this: the list was frozen against *additions*, the count is unchanged at five,
-and the swap is recorded here rather than made silently.
+A swap was drafted and briefly committed, then reverted, because it inverted the scope
+line after sign-off and the confirmation could not be completed. The list must be the one
+that was agreed, not the one that seemed better mid-session — an ADR whose whole mechanism
+is a frozen list cannot have its list quietly change shape.
 
-The two flags turned out to be the same flag.
+The argument for the swap, kept because it is worth deciding rather than losing:
 
 Levers 2, 3 and 4 are all **search** changes, and "the wall is search" is already a retired
 diagnosis — round 4's null-move + LMR went 6–0 in self-play and bought **one extra draw**
-on the ladder. So four of five slots sat inside a family the record has killed. That is a
-weak list: if it comes back empty, it will be hard to tell a real null result from a list
-that never left the exhausted neighbourhood.
+on the ladder. Four of five slots therefore sit inside a family the record has killed. If
+the list comes back empty, it will be hard to distinguish a real null result from a list
+that never left an exhausted neighbourhood.
 
 Counting-rule play is the one candidate outside that family. It is where a chess-derived
 engine most plausibly bleeds on makruk, it has **never been measured**, and the ladder
@@ -50,9 +47,12 @@ blocks are full of the symptom — `b0055` is 35 draws in 62 games, and the engi
 ~25% of self-play games on the ply cap while fairy converts. Whether those draws are
 positions we failed to win is exactly the untested question.
 
-**This amendment is legitimate only because it is pre-execution.** No lever has run and no
-number exists. Once lever 1's first block lands, the list is frozen against amendment of
-any kind, including this kind.
+Against it: slot 5 will most likely be killed unrun by the 2026-09-10 date anyway, which
+makes the whole swap close to a no-op, and re-opening a frozen list is a precedent worth
+more than the slot.
+
+**Decidable only before lever 1's first block lands.** After that, ADR 0003 forbids
+amendment of any kind and this proposal expires unadopted.
 
 **Vocabulary.** An artifact is now **(eval, engineId)** — see CONTEXT.md. Levers 2–4 are
 search changes, so each **mints a new artifact**, and each gets its own ladder block
@@ -108,13 +108,11 @@ different lever" is the move that has to be forbidden by name.
   the program has failed to move four times, and it licenses escalation when the number
   does not move. The retired-hypothesis framing cannot fail to produce output.
 - **Adding levers as they surface.** The whole mechanism. An open list has no end state.
-- **Classical eval terms as a lever.** Held in reserve. Weak prior *and* a known failure
-  mode: the tuner's best-ranked candidate measured **−9 Elo** at Gate A (`b0054`), and
-  held-out loss is already shown not to predict Elo on this engine. It lost its slot to
-  counting-rule play in the amendment above.
+- **Counting-rule play in scope.** It is the most plausible place a chess-derived engine
+  bleeds on makruk, and it is still in reserve — a **flagged** inconsistency, not an
+  oversight. See the open proposal above, which is not adopted.
 - **Dropping slot 5 entirely, running a list of four.** Considered. Rejected because it
-  would leave every remaining lever inside the search family, which is the specific
-  weakness the amendment exists to fix.
+  would leave every remaining lever inside the search family.
 
 ## Consequences
 
