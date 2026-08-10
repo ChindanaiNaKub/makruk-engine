@@ -1,6 +1,9 @@
 # Close the net's speed gap before training again
 
-Status: accepted (2026-08-10)
+Status: **premise refuted by measurement (2026-08-10)** — the speed work was done,
+it worked, and Gate A did not move. Kept rather than deleted: the reasoning below is
+what a future reader will otherwise reconstruct from the same evidence and believe.
+Read the refutation at the bottom first.
 
 ## Decision
 
@@ -57,3 +60,43 @@ this measurement and is superseded by it.
 - **Halve L1 from 256 to 128.** Halves fc1 directly, but costs a retrain and gambles
   the one thing worth protecting — an eval that already wins at equal depth.
 - **Pursue search improvements.** Retired by measurement, three times over.
+
+## Refutation (2026-08-10, same day, block b0063)
+
+The speed work landed and did what it promised. Gate A did not care.
+
+| | r3 net, f32 eval | r3 net, integer eval |
+|---|---|---|
+| depth @ movetime 100 | 5 | **7** |
+| nps | 351k | **483k** |
+| gap vs classic | 2.32x | **1.66x** |
+| Gate A vs classic | 44.2% (−46 Elo), 78 games | **44.0% (−42 Elo), 48 games** |
+
+Two extra plies of search moved the head-to-head by 0.2 points, which is noise.
+
+**What was wrong with the reasoning.** The premise rested on the net's eval scoring
+67.0% against classic *at equal depth*, and inferred that the net loses only because
+it is denied that depth. Give it the depth and it should win. It got two of the three
+missing plies and won nothing. So either the equal-depth advantage does not survive at
+the depths that decide games, or depth was never the mechanism by which the net was
+losing. Either way the diagnosis was wrong, and it was wrong in the same shape as the
+two before it.
+
+**This is the third governing diagnosis this program has retired by measurement:**
+"the wall is search" (three independent instances of search gains not moving the
+ladder), "the wall is depth" (classic at full search parity scores the same, ~0 pp/ply),
+and now "the wall is eval speed". The pattern is not that each guess was unreasonable —
+each had real evidence behind it. It is that a plausible mechanism plus a real
+correlation has, three times, failed to survive an arena block. **Nothing here should be
+believed about this engine until a block says so.**
+
+**What survives.** The integer inference path is kept on its own merits: +37% nps,
++2 ply, exact accumulator round-tripping through do/undo where f32 drifted, and no
+change to the 143.1 KB wasm artifact. It makes the net cheaper wherever the net is
+used. It is simply not a strength lever.
+
+**What is now open.** The pre-committed branch table said a Gate A rejection after a
+speed success points at the corpus. That inference is weaker than it looked: the table
+anticipated speed mattering and the corpus being the remaining gap, whereas what
+happened is that Gate A was indifferent to speed entirely. Deciding "corpus next"
+versus "stop the net program" is a fresh decision on the new evidence, not a lookup.
