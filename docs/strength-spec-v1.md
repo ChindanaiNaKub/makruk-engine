@@ -32,12 +32,24 @@ read it with `node scripts/results.mjs`, never from this prose.
 section now enforces: a target must name the lever that reaches it and the block that measured that
 lever.
 
-### 0.2 The ladder, measured (classic, the strongest artifact)
+### 0.2 The ladder, measured — indexed by artifact
 
-| rung | score | block | | rung | score | block |
-|---|---|---|---|---|---|---|
-| skill 3 | 72.7% | `b0021` | | skill 8 | 23.4% | `b0056` |
-| skill 5 | **39.8%** | `b0055` | | skill 10 | 9.4% | `b0057` |
+**Amended 2026-08-10 ([ADR 0003](adr/0003-eliminate-levers-against-a-frozen-list.md)):
+an artifact is `(eval, engineId)`, not an eval.** The ladder is indexed by both halves,
+because a search change alters how the artifact plays while leaving its eval untouched.
+**Rows under different engineIds are different artifacts and may not be compared**; a
+search lever that lands opens a new row rather than overwriting the one above it.
+
+| artifact (eval, engineId) | skill 3 | skill 5 | skill 8 | skill 10 |
+|---|---|---|---|---|
+| (classic, `89b6a9c`) — incumbent | 72.7% (`b0021`) | **39.8%** (`b0055`) | 23.4% (`b0056`) | 9.4% (`b0057`) |
+
+Crossover ≈ **4.5**. Each lever under ADR 0003 appends its own row here from its own
+~12-minute ladder block; those blocks are **recorded, not gated**.
+
+The pre-2026-08-10 rows above were recorded against the eval alone. They are retained as
+the incumbent's row under the engineId that was current when they were measured; earlier
+engineIds' scores are not in this table and must not be back-filled into it.
 
 Every rung above 3 had only ever been measured with the r3 **net** before 2026-08-03 — the weaker
 artifact. **Skill 10 is not the wall it appeared to be:** the net returned 0–64–0 there, classic

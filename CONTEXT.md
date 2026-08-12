@@ -36,10 +36,24 @@ construction. It proves the rig, not an artifact, and never appears in the stand
 _Avoid_: baseline, sanity run
 
 **Artifact**:
-A specific evaluated thing that can play — a named net file, or the classical eval.
-Artifacts are what blocks compare; a code branch is not an artifact until it is
-pinned to something a block can arm.
+The pair **(eval, engineId)** — what was evaluating, *and* which engine build did the
+searching. Redefined 2026-08-10: the old definition was the eval alone, which made a
+search change invisible to the record even though it changes how the thing plays. A
+search change **mints a new artifact**, and its ladder scores may not be compared with
+an older engineId's. A code branch is not an artifact until it is pinned to something
+a block can arm.
 _Avoid_: model, version, build
+
+**Engine id**:
+The half of an artifact that is not the eval — the pinned engine build (commit) whose
+search produced the moves. Two blocks share an artifact only if both halves match.
+_Avoid_: build number, revision (as a strength claim)
+
+**Lever**:
+One named, single-axis change proposed as the cause of the strength gap, held against
+a pre-committed stop-bar that can retire it. The unit this program produces is a
+**retired** lever, not a strength number.
+_Avoid_: idea, improvement, optimization
 
 ### Deciding
 
@@ -72,10 +86,19 @@ How many labelled positions exist. A quantity.
 _Avoid_: dataset size, data volume
 
 **Corpus level**:
-How strong the teacher that labelled the corpus was. A quality, moved only by
-regenerating data with a better artifact — orthogonal to corpus size, and the axis
-this project has never moved.
+How strong the teacher that labelled the corpus was. A quality, orthogonal to corpus
+size. Its artifact half is **already at its ceiling** — the teacher is Fairy armed
+with the official makruk net, the strongest makruk artifact that exists, so there is
+no better artifact to regenerate with. The only live knob is the teacher's *search
+depth*, which is a different thing and should be said as such.
 _Avoid_: data quality, label depth
+
+**Scaling slope**:
+Strength gained per doubling of corpus size, measured on the ladder. The quantity a
+decision to grow the corpus is betting on, and therefore the one that has to be
+measured before the corpus grows rather than after.
+_Avoid_: data scaling, learning curve (as a strength claim — a loss curve is a fit
+diagnostic and is not this)
 
 **Probe**:
 Top-1 agreement between an artifact's eval and a reference engine's. A fit
