@@ -1,5 +1,5 @@
-//! Negamax alpha-beta with iterative deepening, transposition table,
-//! quiescence, MVV-LVA ordering, killers, and history.
+//! Negamax alpha-beta with iterative deepening, aspiration windows,
+//! transposition table, quiescence, MVV-LVA ordering, killers, and history.
 
 use std::collections::HashSet;
 
@@ -12,6 +12,13 @@ const TT_SIZE: usize = 1 << 18;
 const TT_MASK: usize = TT_SIZE - 1;
 const INF: i32 = 1_000_000;
 const MATE: i32 = eval::CHECKMATE_SCORE;
+/// Aspiration half-window in centipawns. CT800 measured +18 Elo with a 50 cp
+/// window from depth 4 at depths that match this engine (8–10 plies). Research
+/// ticket 03 / ADR 0003 lever 3.
+const ASPIRATION_WINDOW: i32 = 50;
+/// Depths below this search with a full window — the score is too noisy for a
+/// narrow window to pay, and CT800's measured figure started at depth 4.
+const ASPIRATION_MIN_DEPTH: u32 = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Bound {
@@ -166,8 +173,35 @@ impl Searcher {
             5
         };
 
+        // Aspiration windows: after a stable shallow score, search the next
+        // depth inside [score ± WINDOW] and only open the window on a fail.
+        // Reuses the previous iteration's score (and, via the TT, its PV move).
+        // Depths below ASPIRATION_MIN_DEPTH keep the full window.
+        let mut asp_alpha = -INF;
+        let mut asp_beta = INF;
+
         for depth in 1..=max_depth {
-            let score = self.negamax(&mut root, depth as i16, 0, -INF, INF);
+            let mut alpha = asp_alpha;
+            let mut beta = asp_beta;
+            let score = loop {
+                let s = self.negamax(&mut root, depth as i16, 0, alpha, beta);
+                if self.stopped {
+                    break s;
+                }
+                if s <= alpha {
+                    // Fail low — open the bottom and re-search.
+                    alpha = -INF;
+                    continue;
+                }
+                if s >= beta {
+                    // Fail high — open the top and re-search.
+                    beta = INF;
+                    continue;
+                }
+                break s;
+            };
+            // An interrupted iteration must not overwrite a completed shallower
+            // result: the score and TT move may be from a truncated tree.
             if self.stopped && depth > 1 {
                 break;
             }
@@ -181,6 +215,14 @@ impl Searcher {
             self.iteration_one_complete = true;
             if best_score.abs() >= MATE - MAX_PLY as i32 {
                 break; // mate found, no need to search deeper
+            }
+            // Seed the next iteration's window from this score.
+            if depth + 1 >= ASPIRATION_MIN_DEPTH {
+                asp_alpha = best_score.saturating_sub(ASPIRATION_WINDOW).max(-INF);
+                asp_beta = best_score.saturating_add(ASPIRATION_WINDOW).min(INF);
+            } else {
+                asp_alpha = -INF;
+                asp_beta = INF;
             }
             if let Some(dl) = self.deadline_ms {
                 // Don't start a new iteration we cannot plausibly finish.
