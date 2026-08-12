@@ -12,6 +12,7 @@ pub mod game;
 pub mod movegen;
 pub mod nnue;
 pub mod search;
+pub mod see;
 pub mod uci;
 
 use wasm_bindgen::prelude::*;
