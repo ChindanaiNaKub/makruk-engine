@@ -1,12 +1,11 @@
 //! Negamax alpha-beta with iterative deepening, transposition table,
-//! quiescence, MVV-LVA / SEE ordering, killers, and history.
+//! quiescence, MVV-LVA ordering, killers, and history.
 
 use std::collections::HashSet;
 
 use crate::board::*;
 use crate::eval;
 use crate::game::{Game, Outcome};
-use crate::see;
 
 const MAX_PLY: usize = 128;
 const TT_SIZE: usize = 1 << 18;
@@ -403,21 +402,7 @@ impl Searcher {
             game.board.at(mv.to).is_some() // captures
                 || is_promotion_move(&game.board, *mv) // promotion swings are forcing
         });
-        // Lever 4 (ADR 0003): order qsearch captures by SEE, not MVV-LVA.
-        // Quiet promotions keep a fixed high priority — SEE on them is 0 and
-        // would bury forcing moves under losing captures.
-        moves.sort_by_cached_key(|mv| {
-            let promo = is_promotion_move(&game.board, *mv);
-            let capture = game.board.at(mv.to).is_some();
-            let key = if capture {
-                see::see(&game.board, *mv)
-            } else if promo {
-                50_000
-            } else {
-                0
-            };
-            -key
-        });
+        self.order_moves(game, &mut moves, None, ply as usize);
 
         for mv in moves {
             let undo = game.do_move(mv);
