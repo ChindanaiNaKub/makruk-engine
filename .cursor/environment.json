@@ -1,0 +1,4 @@
+{
+  "name": "makruk-engine",
+  "install": "bash .cursor/install.sh"
+}
