@@ -34,8 +34,13 @@ const fn build_center_bonus() -> [i32; 64] {
     out
 }
 
-const PAWN_ADVANCE_WHITE: [i32; 8] = [0, 0, 0, 5, 15, 30, 0, 0];
-const PAWN_ADVANCE_BLACK: [i32; 8] = [0, 0, 30, 15, 5, 0, 0, 0];
+// Advance bonuses for unpromoted bia. Promotion is automatic on landing on
+// `Color::promotion_row` (white row 5, black row 2), so an unpromoted bia
+// never sits on that row — the old tables put their peak (30) there and it
+// fired 0/40,000 positions in the redraw research corpus. Peak moved to the
+// last reachable rank (white 4, black 3). ADR 0003 lever 5.
+const PAWN_ADVANCE_WHITE: [i32; 8] = [0, 0, 0, 15, 30, 0, 0, 0];
+const PAWN_ADVANCE_BLACK: [i32; 8] = [0, 0, 0, 30, 15, 5, 0, 0];
 
 const KING_SAFETY: [i32; 64] = build_king_safety();
 
