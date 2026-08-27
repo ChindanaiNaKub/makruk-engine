@@ -29,7 +29,7 @@
 // explicitly includes catching rows that did not come through `appendBlock` —
 // written by hand, or by an older version of this file.
 
-const KINDS = new Set(["gate-a", "gate-b", "control", "smoke", "diag"]);
+const KINDS = new Set(["gate-a", "gate-b", "control", "smoke", "diag", "measure"]);
 const EVALS = new Set(["net", "classic"]);
 const MAX_PLIES = 400; // match-arena.mjs:46
 
@@ -121,6 +121,7 @@ const RULES = [
       if (!has(b.kind) || !has(b.opponent?.engine)) return null;
       if (b.kind === "gate-a" && b.opponent.engine !== "ours") return `kind gate-a but opponent.engine is '${b.opponent.engine}' — gate-a is head-to-head against ourselves`;
       if (b.kind === "gate-b" && b.opponent.engine !== "fairy") return `kind gate-b but opponent.engine is '${b.opponent.engine}' — gate-b is the ladder against fairy`;
+      if (b.kind === "measure" && ["ours", "fairy"].includes(b.opponent.engine)) return `kind measure but opponent.engine is '${b.opponent.engine}' — measure is for a NAMED external opponent played through FAIRY_BIN (use gate-a/gate-b otherwise)`;
       return null;
     },
   },

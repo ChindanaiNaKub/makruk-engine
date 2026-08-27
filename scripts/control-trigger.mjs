@@ -101,11 +101,17 @@ export function fingerprint(b) {
   });
 }
 
-/// Identity of the opponent as a ladder rung.
+/// Identity of the opponent as a ladder rung. A NAMED external opponent
+/// (OPP_LABEL — integration ticket 01's heuristic-bot shim) gets its own
+/// `ext:` family rather than falling into the ours-branch: two configs of one
+/// external program are different cells, and pooling them would compare a block
+/// against itself at another strength.
 const rung = (b) =>
   b.opponent?.engine === "fairy"
     ? `fairy:${b.opponent.skill}:${b.opponent.eval}`
-    : `ours:${b.opponent?.eval}:${b.opponent?.weights ?? "-"}`;
+    : b.opponent?.engine === "ours"
+      ? `ours:${b.opponent?.eval}:${b.opponent?.weights ?? "-"}`
+      : `ext:${b.opponent?.engine ?? "?"}`;
 
 /// Identity of our artifact.
 const artifact = (b) => (b.mine?.eval === "net" ? `net:${b.mine.weights}` : "classic");

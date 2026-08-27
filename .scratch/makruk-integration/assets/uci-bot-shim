@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Executable entry point for scripts/uci-bot-shim.ts — the arena spawns FAIRY_BIN
+# directly, so the site repo needs a shebang-able wrapper resolving its tsx.
+set -euo pipefail
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$dir/../node_modules/.bin/tsx" "$dir/uci-bot-shim.ts"

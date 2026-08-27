@@ -93,12 +93,29 @@ function readLedger() {
 // population's observed range on every --verbose run for exactly that reason: a
 // future block landing outside this band by a hair should recalibrate these
 // constants, not be convicted by them.
+//
+// RECALIBRATED 2026-08-26 (integration ticket 01), by the rule in the paragraph
+// above rather than against it: the first blocks at site movetimes landed at
+// 0.991 (b0065) and 0.937 (b0066) — over the old ceiling by seven
+// ten-thousandths in the control's case, which refused the next block outright.
+// The mechanism is the one the original note implies but did not extrapolate:
+// fixed per-move overhead is a smaller FRACTION of an 850 ms budget than of a
+// 100 ms one, so honest ratios rise toward 1.0 as the clock lengthens. New
+// ceiling = midpoint between the new honest maximum (0.9908) and the nearest
+// historically convicted value (b0043, 1.042): 1.016.
 // ---------------------------------------------------------------------------
-const TIMING_BAND = { lo: 0.75, hi: 0.99 };
+const TIMING_BAND = { lo: 0.75, hi: 1.016 };
 
 function timingRatio(b) {
   const pg = b.perGame;
   if (!Array.isArray(pg) || !pg.length) return null;
+  // A `measure` row's opponent is a NAMED EXTERNAL engine that does not honor
+  // `go movetime` (integration ticket 01 — the site heuristic bot governs itself
+  // via persona maxMs). The prediction below assumes both sides are
+  // movetime-bound; against such an opponent it is not merely wrong, it is
+  // wrong in a direction nothing here can calibrate, so the invariant does not
+  // apply rather than applying loosely.
+  if (b.kind === "measure") return null;
   if (b.gameTimeS == null || b.movetime == null || b.opponentMovetime == null) return null;
   // Opening plies are played from the book, not searched, so they cost nothing.
   const open = b.openingPlies ?? 0;
@@ -511,6 +528,9 @@ function audit() {
     if (b.kind === "gate-b" && opp.engine !== "fairy") {
       add({ id, invariant: "kind-matches-opponent", says: `kind gate-b`, contradicts: `opponent.engine is '${opp.engine ?? "absent"}' — gate-b is the ladder against fairy (match-arena.mjs:465)`, class: "identity" });
     }
+    if (b.kind === "measure" && ["ours", "fairy"].includes(opp.engine ?? "")) {
+      add({ id, invariant: "kind-matches-opponent", says: `kind measure`, contradicts: `opponent.engine is '${opp.engine ?? "absent"}' — measure is for a NAMED external opponent played through FAIRY_BIN`, class: "identity" });
+    }
     if (b.kind === "control") {
       const m = b.mine ?? {};
       const identical = opp.engine === "ours" && m.eval === opp.eval && (m.weights ?? null) === (opp.weights ?? null);
@@ -644,10 +664,16 @@ function audit() {
   // at all, or it may be reproducible but pooled across blocks that were never
   // measuring the same thing.
   const artifactOf = (b) => (b.mine?.eval === "net" ? `net:${b.mine.weights}` : "classic");
+  // Kept in step with control-trigger.mjs's rung(): named external opponents
+  // get their own ext: cells there, so the recomputation here must pool the
+  // same way or a stored suspect reason would fail to reproduce for a reason
+  // that is not one.
   const rungOf = (b) =>
     b.opponent?.engine === "fairy"
       ? `fairy:${b.opponent.skill}:${b.opponent.eval}`
-      : `ours:${b.opponent?.eval}:${b.opponent?.weights ?? "-"}`;
+      : b.opponent?.engine === "ours"
+        ? `ours:${b.opponent?.eval}:${b.opponent?.weights ?? "-"}`
+        : `ext:${b.opponent?.engine ?? "?"}`;
   const conditionOf = (b) => (b.depth != null ? `depth ${b.depth}` : `${b.movetime}/${b.opponentMovetime}ms`);
   const NOISE = new Set(["smoke", "diag", "control"]);
   // readBlocks()' default view, which is what postChecks() saw: retracted rows

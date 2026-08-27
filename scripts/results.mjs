@@ -503,9 +503,11 @@ const pct = (b) => (b.score * 100).toFixed(1) + "%";
 const sideLabel = (s) =>
   s.engine === "fairy"
     ? `fairy skill ${s.skill}${s.eval === "nnue" ? " +nnue" : ""}`
-    : s.eval === "net"
-      ? `net ${(s.weights ?? "").replace(/^makruk-tiny-v1-/, "").replace(/\.bin$/, "") || "?"}`
-      : "classic";
+    : s.engine && s.engine !== "ours"
+      ? String(s.engine)
+      : s.eval === "net"
+        ? `net ${(s.weights ?? "").replace(/^makruk-tiny-v1-/, "").replace(/\.bin$/, "") || "?"}`
+        : "classic";
 
 export function table(blocks) {
   if (!blocks.length) return "_(no blocks recorded yet)_";

@@ -96,6 +96,14 @@ const FAIRY_DIR =
   process.env.FAIRY_DIR || path.resolve(root, "..", "markrukthai-1", "node_modules");
 const FAIRY_BIN = process.env.FAIRY_BIN || null;
 const FAIRY_EVAL = process.env.FAIRY_EVAL || null;
+// Name a NON-fairy, non-ours UCI opponent played through the FAIRY_BIN slot.
+// Without this the row would record such an opponent as engine "fairy", which is
+// exactly the wrong-number-survives-quietly shape this program exists to stop.
+// The label IS the opponent's identity in the ledger (integration ticket 01:
+// the site heuristic bot, wrapped in a UCI shim), so distinct configurations
+// get distinct labels — `site-heuristic-bot-l7`, not a bare family name —
+// because rung() pools cells by this string.
+const OPP_LABEL = process.env.OPP_LABEL || null;
 // Net weights for the OPPONENT side (only meaningful with FAIRY_BIN = our own
 // binary). Enables net-vs-net Gate A blocks; unset means the opponent plays our
 // classical eval, as before.
@@ -236,8 +244,13 @@ async function startFairyProcessEngine(bin) {
   eng.send("uci");
   await eng.waitFor((l) => l.includes("uciok"), "fairy uciok");
   eng.send("setoption name UCI_Variant value makruk");
-  eng.send(`setoption name Skill Level value ${FAIRY_SKILL}`);
-  if (FAIRY_EVAL) eng.send(`setoption name EvalFile value ${FAIRY_EVAL}`);
+  // Skill Level and EvalFile are fairy concepts. A NAMED external opponent
+  // (OPP_LABEL) gets neither: sending them would imply the row's skill field
+  // meant something for an engine that has no such option.
+  if (!OPP_LABEL) {
+    eng.send(`setoption name Skill Level value ${FAIRY_SKILL}`);
+    if (FAIRY_EVAL) eng.send(`setoption name EvalFile value ${FAIRY_EVAL}`);
+  }
   eng.send("isready");
   await eng.waitFor((l) => l.includes("readyok"), "fairy readyok");
 
@@ -424,8 +437,17 @@ function runControlBlock() {
      // `go depth` block — validating plumbing the block never used, which is
      // strictly worse than no control at all because it reads as a pass.
      // (redraw ticket 02: b0039 is such a control, fired for the depth-5 b0040.)
-     ...(DEPTH > 0 ? ["--depth", String(DEPTH)] : [])],
-    { stdio: "inherit", env: { ...process.env, FAIRY_BIN: OUR_ENGINE, OPP_WEIGHTS: process.env.MAKURUK_WEIGHTS ?? "" } }
+     ...(DEPTH > 0 ? ["--depth", String(DEPTH)] : []),
+     // The control MUST fit the same explicit ceiling grant the main block was
+     // given. Without forwarding it, a mandated control at a long movetime dies
+     // against its own inherited ceiling and fatals the block that asked for it.
+     ...(BUDGET_MIN ? ["--budget-min", String(BUDGET_MIN)] : [])],
+    { stdio: "inherit",
+      env: { ...process.env, FAIRY_BIN: OUR_ENGINE, OPP_WEIGHTS: process.env.MAKURUK_WEIGHTS ?? "",
+        // A control is self-play by construction; a named-external label
+        // inherited from the parent would describe the child's opponent as
+        // something it is not.
+        OPP_LABEL: "" } }
   );
   if (r.status !== 0) {
     console.error(`\nFATAL [control] the control block itself failed (exit ${r.status}).`);
@@ -514,7 +536,9 @@ async function main() {
     },
     opponent: oppIsOurs
       ? { engine: "ours", eval: OPP_WEIGHTS ? "net" : "classic", weights: OPP_WEIGHTS ? path.basename(OPP_WEIGHTS) : null, engineId: engineIds.opponent }
-      : { engine: "fairy", skill: FAIRY_SKILL, eval: FAIRY_EVAL ? "nnue" : "classical", binary: FAIRY_BIN ? "native" : "wasm", engineId: engineIds.opponent, weights: FAIRY_EVAL ? path.basename(FAIRY_EVAL) : null },
+      : OPP_LABEL
+        ? { engine: OPP_LABEL, eval: null, skill: null, weights: null, binary: "native", engineId: engineIds.opponent }
+        : { engine: "fairy", skill: FAIRY_SKILL, eval: FAIRY_EVAL ? "nnue" : "classical", binary: FAIRY_BIN ? "native" : "wasm", engineId: engineIds.opponent, weights: FAIRY_EVAL ? path.basename(FAIRY_EVAL) : null },
     // Under --depth, goCmd ignores both movetime values entirely: BOTH engines
     // get `go depth N`. Recording the ms figures anyway would be a lie in the
     // ledger — and a flattering one, since a row reading "opponent 400 ms"
@@ -529,6 +553,12 @@ async function main() {
     seed: SEED,
     concurrency: Math.max(1, Math.min(CONCURRENCY, GAMES_EFFECTIVE)),
     sprt: SPRT ? {} : null,
+    // A named external opponent does not honor `go movetime` — its own budget
+    // governs. Said inside the row so the recorded movetime pair can never be
+    // read as a claim about the opponent's clock.
+    ...(OPP_LABEL
+      ? { notes: "opponent ignores go movetime by design; its own per-move budget governs (integration ticket 01)" }
+      : {}),
   };
 
   // Everything knowable before a game is played is checkable before a game is
@@ -612,7 +642,7 @@ async function main() {
 
   console.log(
     `mine: ${resolveEval("mine", process.env.MAKURUK_EVAL, process.env.MAKURUK_WEIGHTS)}  vs  ` +
-      `opponent: ${oppIsOurs ? resolveEval("opponent", OPP_WEIGHTS ? "net" : "classic", OPP_WEIGHTS) : `fairy skill ${FAIRY_SKILL}${FAIRY_EVAL ? " +nnue" : " classical"}`}` +
+      `opponent: ${oppIsOurs ? resolveEval("opponent", OPP_WEIGHTS ? "net" : "classic", OPP_WEIGHTS) : OPP_LABEL ?? `fairy skill ${FAIRY_SKILL}${FAIRY_EVAL ? " +nnue" : " classical"}`}` +
       `  @ ${MOVETIME}/${FAIRYTIME} ms\n`
   );
   const score = { mineWins: 0, fairyWins: 0, draws: 0, maxPly: 0, errors: 0 };
